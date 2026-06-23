@@ -603,11 +603,14 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                                             if let Some(m) = p.models.get(app.tui.model_cursor) {
                                                 app.tui.current_model = m.id.clone();
                                                 app.tui.provider_popup = Some(app.tui.provider_cursor);
+                                                tracing::debug!("provider_popup set (model select)");
                                             }
                                         }
                                     } else {
                                         // Enter on provider: open detail popup
-                                        app.tui.provider_popup = Some(app.tui.provider_cursor);
+                                        let idx = app.tui.provider_cursor;
+                                        app.tui.provider_popup = Some(idx);
+                                        tracing::debug!("provider_popup set to {:?} (enter on provider)", idx);
                                     }
                                 }
                                 crossterm::event::KeyCode::Left | crossterm::event::KeyCode::Esc => {
