@@ -278,6 +278,109 @@ impl TuiState {
         count
     }
 
+    /// 处理 Provider section 键盘事件
+    /// 返回 true 表示事件被消费，false 表示未处理
+    pub fn handle_provider_key(&mut self, key: crossterm::event::KeyCode) -> bool {
+        if let Some(popup_idx) = self.provider_popup {
+            // Popup 打开：仅 Esc=关闭, Enter=激活
+            match key {
+                crossterm::event::KeyCode::Esc => {
+                    self.provider_popup = None;
+                    true
+                }
+                crossterm::event::KeyCode::Enter => {
+                    if let Some(p) = self.providers.get(popup_idx) {
+                        if let Some(first) = p.models.first() {
+                            self.current_model = first.id.clone();
+                        }
+                    }
+                    self.provider_popup = None;
+                    true
+                }
+                _ => false,
+            }
+        } else {
+            // 正常导航
+            match key {
+                crossterm::event::KeyCode::Up => {
+                    if self.selecting_model {
+                        let cur = self.model_cursor;
+                        if cur > 0 { self.model_cursor = cur - 1; }
+                    } else {
+                        let cur = self.provider_cursor;
+                        if cur > 0 { self.provider_cursor = cur - 1; }
+                    }
+                    true
+                }
+                crossterm::event::KeyCode::Down => {
+                    if self.selecting_model {
+                        let cur = self.model_cursor;
+                        let total = self.providers.get(self.provider_cursor)
+                            .map(|p| p.models.len()).unwrap_or(0);
+                        if cur + 1 < total { self.model_cursor = cur + 1; }
+                    } else {
+                        let cur = self.provider_cursor;
+                        if cur + 1 < self.providers.len() { self.provider_cursor = cur + 1; }
+                    }
+                    true
+                }
+                crossterm::event::KeyCode::Right => {
+                    if !self.selecting_model {
+                        if self.providers.get(self.provider_cursor)
+                            .map(|p| !p.models.is_empty()).unwrap_or(false)
+                        {
+                            self.selecting_model = true;
+                            self.model_cursor = 0;
+                        }
+                    }
+                    true
+                }
+                crossterm::event::KeyCode::Enter => {
+                    if self.selecting_model {
+                        if let Some(p) = self.providers.get(self.provider_cursor) {
+                            if let Some(m) = p.models.get(self.model_cursor) {
+                                self.current_model = m.id.clone();
+                                self.provider_popup = Some(self.provider_cursor);
+                            }
+                        }
+                    } else if !self.providers.is_empty() {
+                        self.provider_popup = Some(self.provider_cursor);
+                    }
+                    true
+                }
+                crossterm::event::KeyCode::Left | crossterm::event::KeyCode::Esc => {
+                    if self.selecting_model {
+                        self.selecting_model = false;
+                    }
+                    true
+                }
+                crossterm::event::KeyCode::Char('+') => {
+                    if !self.selecting_model {
+                        let default = crate::provider::ProviderInfo {
+                            id: "new-provider".into(), name: "New Provider".into(),
+                            bridge: false, base_url: "https://api.openai.com/v1".into(),
+                            api_key: String::new(),
+                            models: vec![crate::provider::ModelInfo {
+                                id: "gpt-4o".into(), name: "GPT-4o".into(),
+                                context_window: 128000, reasoning: true, tier: "T3".into(),
+                            }],
+                        };
+                        self.providers.push(default);
+                        let path = crate::provider::config_path();
+                        let cfg = crate::provider::ProviderConfig {
+                            port: 8001,
+                            current_model: Some(self.current_model.clone()),
+                            providers: self.providers.clone(),
+                        };
+                        crate::provider::ProviderConfig::save(&path, &cfg);
+                    }
+                    true
+                }
+                _ => false,
+            }
+        }
+    }
+
     /// 获取扁平化索引对应的项信息（用于渲染光标）
     /// 返回 (is_workspace, ws_index, session_index_option)
     pub fn sidebar_item_at(&self, cursor: usize) -> Option<(bool, usize, Option<usize>)> {
@@ -1337,5 +1440,204 @@ mod tests {
             bottom.contains("Ctrl+C"),
             "bottom bar should show shortcuts"
         );
+    }
+
+    #[test]
+    fn test_provider_enter_opens_popup() {
+        // RED: handle_provider_key 还不存在，因此需要先写测试
+        // 期望：在 Provider section 按下 Enter 时 provider_popup 变为 Some(0)
+        let mut state = TuiState::new();
+        state.providers = vec![
+            crate::provider::ProviderInfo {
+                id: "deepseek".into(),
+                name: "DeepSeek".into(),
+                bridge: false,
+                base_url: "https://api.deepseek.com/v1".into(),
+                api_key: "sk-test".into(),
+                models: vec![
+                    crate::provider::ModelInfo {
+                        id: "deepseek-chat".into(),
+                        name: "DeepSeek Chat".into(),
+                        context_window: 64000,
+                        reasoning: false,
+                        tier: "T2".into(),
+                    },
+                ],
+            },
+        ];
+        state.focus_panel = FocusPanel::Sidebar;
+        state.sidebar_subsection = SidebarSubsection::Provider;
+        state.selecting_model = false;
+        state.provider_popup = None;
+        state.provider_cursor = 0;
+
+        state.handle_provider_key(crossterm::event::KeyCode::Enter);
+
+        assert_eq!(
+            state.provider_popup,
+            Some(0),
+            "Enter 应该打开 provider popup (idx=0)"
+        );
+    }
+
+    #[test]
+    fn test_provider_enter_on_empty_list_keeps_popup_closed() {
+        let mut state = TuiState::new();
+        state.focus_panel = FocusPanel::Sidebar;
+        state.sidebar_subsection = SidebarSubsection::Provider;
+        state.selecting_model = false;
+        state.provider_popup = None;
+        state.provider_cursor = 0;
+
+        state.handle_provider_key(crossterm::event::KeyCode::Enter);
+
+        assert_eq!(
+            state.provider_popup,
+            None,
+            "无 provider 时 Enter 不应打开 popup"
+        );
+    }
+
+    #[test]
+    fn test_provider_popup_esc_closes() {
+        let mut state = TuiState::new();
+        state.providers = vec![
+            crate::provider::ProviderInfo {
+                id: "deepseek".into(),
+                name: "DeepSeek".into(),
+                bridge: false,
+                base_url: "https://api.deepseek.com/v1".into(),
+                api_key: "sk-test".into(),
+                models: vec![],
+            },
+        ];
+        state.focus_panel = FocusPanel::Sidebar;
+        state.sidebar_subsection = SidebarSubsection::Provider;
+        state.provider_popup = Some(0);
+
+        // Esc 关闭 popup
+        state.handle_provider_key(crossterm::event::KeyCode::Esc);
+        assert_eq!(state.provider_popup, None, "Esc 应关闭 popup");
+    }
+
+    #[test]
+    fn test_provider_popup_enter_activates_first_model() {
+        let mut state = TuiState::new();
+        state.current_model = "old-model".into();
+        state.providers = vec![
+            crate::provider::ProviderInfo {
+                id: "deepseek".into(),
+                name: "DeepSeek".into(),
+                bridge: false,
+                base_url: "https://api.deepseek.com/v1".into(),
+                api_key: "sk-test".into(),
+                models: vec![
+                    crate::provider::ModelInfo {
+                        id: "deepseek-chat".into(),
+                        name: "DeepSeek Chat".into(),
+                        context_window: 64000,
+                        reasoning: false,
+                        tier: "T2".into(),
+                    },
+                ],
+            },
+        ];
+        state.focus_panel = FocusPanel::Sidebar;
+        state.sidebar_subsection = SidebarSubsection::Provider;
+        state.provider_popup = Some(0);
+
+        // Enter 激活第一个 model
+        state.handle_provider_key(crossterm::event::KeyCode::Enter);
+        assert_eq!(state.current_model, "deepseek-chat", "Enter 应激活第一个 model");
+        assert_eq!(state.provider_popup, None, "激活后 popup 应关闭");
+    }
+
+    #[test]
+    fn test_provider_nav_down_up() {
+        let mut state = TuiState::new();
+        state.providers = vec![
+            crate::provider::ProviderInfo {
+                id: "a".into(), name: "A".into(),
+                bridge: false, base_url: "".into(), api_key: "".into(),
+                models: vec![],
+            },
+            crate::provider::ProviderInfo {
+                id: "b".into(), name: "B".into(),
+                bridge: false, base_url: "".into(), api_key: "".into(),
+                models: vec![],
+            },
+            crate::provider::ProviderInfo {
+                id: "c".into(), name: "C".into(),
+                bridge: false, base_url: "".into(), api_key: "".into(),
+                models: vec![],
+            },
+        ];
+        state.focus_panel = FocusPanel::Sidebar;
+        state.sidebar_subsection = SidebarSubsection::Provider;
+        state.provider_cursor = 0;
+
+        // Down → cursor=1
+        state.handle_provider_key(crossterm::event::KeyCode::Down);
+        assert_eq!(state.provider_cursor, 1, "Down 应移动到第二个 provider");
+
+        // Down → cursor=2
+        state.handle_provider_key(crossterm::event::KeyCode::Down);
+        assert_eq!(state.provider_cursor, 2, "Down 应移动到第三个 provider");
+
+        // Down → stays at 2 (end of list)
+        state.handle_provider_key(crossterm::event::KeyCode::Down);
+        assert_eq!(state.provider_cursor, 2, "Down 在末尾不应越界");
+
+        // Up → cursor=1
+        state.handle_provider_key(crossterm::event::KeyCode::Up);
+        assert_eq!(state.provider_cursor, 1, "Up 应回到第二个");
+
+        // Up → cursor=0
+        state.handle_provider_key(crossterm::event::KeyCode::Up);
+        assert_eq!(state.provider_cursor, 0, "Up 应回到第一个");
+
+        // Up → stays at 0 (start of list)
+        state.handle_provider_key(crossterm::event::KeyCode::Up);
+        assert_eq!(state.provider_cursor, 0, "Up 在开头不应越界");
+    }
+
+    #[test]
+    fn test_provider_enter_selects_then_opens_model_popup() {
+        let mut state = TuiState::new();
+        state.current_model = "old".into();
+        state.providers = vec![
+            crate::provider::ProviderInfo {
+                id: "ds".into(), name: "DS".into(),
+                bridge: false, base_url: "".into(), api_key: "".into(),
+                models: vec![
+                    crate::provider::ModelInfo {
+                        id: "m1".into(), name: "M1".into(),
+                        context_window: 1000, reasoning: false, tier: "T1".into(),
+                    },
+                    crate::provider::ModelInfo {
+                        id: "m2".into(), name: "M2".into(),
+                        context_window: 2000, reasoning: true, tier: "T2".into(),
+                    },
+                ],
+            },
+        ];
+        state.focus_panel = FocusPanel::Sidebar;
+        state.sidebar_subsection = SidebarSubsection::Provider;
+        state.selecting_model = false;
+        state.provider_cursor = 0;
+
+        // → 展开 model list
+        state.handle_provider_key(crossterm::event::KeyCode::Right);
+        assert!(state.selecting_model, "Right 应展开 model list");
+        assert_eq!(state.model_cursor, 0, "展开后光标应在第一个 model");
+
+        // Down 选择第二个 model
+        state.handle_provider_key(crossterm::event::KeyCode::Down);
+        assert_eq!(state.model_cursor, 1, "Down 应移动到第二个 model");
+
+        // Enter 选中 model + 打开 popup
+        state.handle_provider_key(crossterm::event::KeyCode::Enter);
+        assert_eq!(state.current_model, "m2", "Enter 应切换到选中的 model");
+        assert_eq!(state.provider_popup, Some(0), "Enter 应同时打开 provider popup");
     }
 }
