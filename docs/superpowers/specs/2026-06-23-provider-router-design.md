@@ -34,6 +34,17 @@
 └──────────────────────────────────────────────────────┘
 ```
 
+## 文件路径
+
+`providers.json` 存储在 TUI 的配置目录：`~/.config/agent-tui/providers.json`
+
+## 读写并发保护
+
+`providers.json` 由 `Arc<RwLock<ProviderConfig>>` 在内存中持有。TUI 启动时一次性读取，之后所有读写操作基于内存中的 `Arc<RwLock>`：
+- HTTP Router 每请求读 `providers.json` 的内存快照（`read().unwrap()`）
+- TUI 界面切换模型时写内存（`write().unwrap()`），并异步写回磁盘文件
+- 磁盘写入使用原子写（`write_atomic`：先写 `.tmp` 再 `rename`），避免文件损坏
+
 ## 核心原则
 
 1. **单一 endpoint** — pi 只注册一个 provider `"local"`，所有请求发到 `http://127.0.0.1:8001/v1/*`
@@ -46,44 +57,27 @@
 
 pi 注册 provider 时通过 `api` 字段决定请求格式。注册为 `api: "openai-completions"` 则 pi 发送 OpenAI 格式。
 
-各后端的格式策略：
+各后端的格式策略（MVP 阶段）：
 
-| 后端类型 | 路由方式 | 格式 | 说明 |
-|----------|----------|------|------|
-| deepseek / openrouter / groq 等 | body.model | OpenAI 原生 | 透传，零处理 |
-| anthropic | body.model → header 格式检测 | Anthropic Messages | Anthropic 不走 OpenAI 格式，需在路由器端做单方向适配 |
-| gemini | body.model | OpenAI 兼容 | Gemini 有自己的 `/v1/models` 和 `/v1/chat/completions` |
+| 后端类型 | 路由方式 | 说明 |
+|----------|----------|------|
+| deepseek / openrouter / groq / openai 等 | body.model | OpenAI 原生，透传零处理 |
+| anthropic（通过 openrouter） | body.model | OpenRouter 负责格式转换，TUI 透传 |
+| gemini（通过 openrouter） | body.model | OpenRouter 负责格式转换，TUI 透传 |
 
-对于 **Anthropic** 这类不原生支持 OpenAI 格式的后端，有两种处理路径：
+**MVP 只对接 OpenAI 兼容的 provider**。anthropic、gemini 等非 OpenAI 格式的后端通过 `baseUrl` 指向格式转换网关（如 OpenRouter / litellm / one-api）来接入，TUI 不感知格式差异。格式转换层作为后续迭代。
 
-### 路径 A：注册为独立 provider（当前方案）
+示例：要使用 Claude，在 `providers.json` 中配置 OpenRouter：
 
-在 `local-provider.ts` 中注册两个 provider：
-
-```ts
-// 聚合 provider — 全走 OpenAI 格式
-pi.registerProvider("local", {
-  baseUrl: "http://127.0.0.1:8001/v1",
-  apiKey: "LOCAL_API_KEY",
-  api: "openai-completions",
-  models: [
-    { id: "deepseek-v4-flash", ... },
-    { id: "deepseek-v4-pro", ... },
-    // anthropic 的 model 也注册到这里
-    // 但路由转发时需要处理格式差异
-  ],
-});
+```json
+{
+  "id": "openrouter",
+  "baseUrl": "https://openrouter.ai/api/v1",
+  "models": [{ "id": "anthropic/claude-sonnet-4", ... }]
+}
 ```
 
-当 `body.model` 匹配到 anthropic 的 model 时，路由器将 OpenAI 格式的请求转换为 Anthropic Messages 格式再转发。
-
-### 路径 B：纯透传 + 用户侧保证
-
-路由器只转发 OpenAI 格式的请求，anthropic 用户需通过 OSS 代理（如 `litellm` / `one-api`）在其目标 `baseUrl` 层完成格式转换。TUI 不感知格式细节。
-
-### 推荐：先做路径 B（MVP），路径 A 后续迭代
-
-MVP 阶段只支持 OpenAI 兼容的 provider（deepseek、openrouter、groq、openai 等），anthropic、gemini 用户自建适配网关。等核心流程稳定后再加格式转换层。
+TUI 转发请求到 OpenRouter，OpenRouter 负责将 OpenAI 格式转换为 Anthropic Messages 格式。
 
 ## 路由逻辑
 
@@ -120,6 +114,8 @@ Body: { model: "deepseek-v4-flash", messages: [...], stream: true }
 ```json
 {
   "port": 8001,
+  // 默认选中的模型，仅用于 TUI 界面初始状态
+  // 实际路由完全依赖请求中的 body.model 字段
   "currentModel": "deepseek-v4-flash",
   "providers": [
     {
@@ -171,6 +167,8 @@ export default async function (pi: ExtensionAPI) {
     apiKey: "LOCAL_API_KEY",
     api: "openai-completions",
     headers: {
+      // `!` 前缀是 pi extension 的 shell 命令语法
+      // 要求：pi 版本 ≥ 0.77（@earendil-works/pi-coding-agent）
       "X-Session-Id": "!cat /tmp/pi-session-id",
     },
     compat: {
@@ -207,10 +205,14 @@ export default async function (pi: ExtensionAPI) {
 
 **不需要重启 pi**。用户通过 TUI 界面选择模型后：
 
-1. TUI 更新 `providers.json` 的 `currentModel`
-2. TUI 显示侧边栏模型变更
-3. pi 的下一次请求（用户发送新消息）会自动使用新的 `body.model` 值
-4. 路由器根据新 model 值自动路由到对应的 backend
+1. TUI 更新 `providers.json` 的 `currentModel`（仅用于 UI 初始选中）
+2. TUI 内部记录当前模型，通过 RPC 通知 pi 切换模型（`/model` 命令或 `set_config` 通知）
+3. pi 的下一次请求会自动使用新的 `body.model` 值
+4. 路由器根据 body.model 值自动路由到对应的 backend
+
+**关键**：路由器不依赖 `currentModel`。路由决策完全基于请求中的 `body.model`，这是设计原则：「路由器无状态」。
+
+如果 pi 不支持运行时通过 RPC 切换模型，TUI 重启 pi 子进程并传入 `--model <新模型>`。这是降级行为，正常路径是 RPC 切换。
 
 ## TUI 界面
 
@@ -231,6 +233,50 @@ Status: ● 路由在线 (127.0.0.1:8001)
 - `◆` / `○` 表示 provider 启用/未使用
 - MODEL 区展示当前可用模型列表
 - 底部显示路由状态
+
+## 进程生命周期
+
+HTTP Router 作为 TUI 进程内的一个 axum server 运行，与 ratatui 共享同一个 tokio runtime。
+
+```
+TUI 启动流程:
+1. 解析 CLI 参数
+2. 读取 providers.json → 初始化 Arc<RwLock<ProviderConfig>>
+3. 启动 axum HTTP server（spawn 到现有 tokio runtime）
+4. 生成并写入 local-provider.ts 到 pi 的 extensions 目录
+5. 启动 pi RPC 子进程（pi 自动加载 local-provider.ts）
+6. 进入 TUI 事件循环
+┌─────────────────────────────────────────────────────────┐
+│  tokio::select! 同时驱动:                                │
+│  ├─ ticker（TUI 渲染）                                   │
+│  ├─ event_stream（crossterm 键盘/鼠标）                  │
+│  ├─ pi event_rx（RPC 事件）                              │
+│  └─ axum Server（Provider Router）                       │
+└─────────────────────────────────────────────────────────┘
+
+TUI 退出时:
+1. pi RPC 子进程停止
+2. axum server graceful shutdown（tokio signal + timeout）
+3. 可选：将 local-provider.ts 保留（供下次启动时沿用）或移除
+```
+
+## 错误处理
+
+| 场景 | 行为 | HTTP 状态码 |
+|------|------|------------|
+| body.model 不在任何 provider 的 models 中 | 返回错误 JSON `{ error: "unknown model: xxx" }` | 404 |
+| 目标后端不可达 / 超时 | `reqwest` 返回错误，路由器透传为 502 | 502 |
+| JSON body 解析失败 / 缺少 model 字段 | 返回错误 JSON `{ error: "invalid request: ..." }` | 400 |
+| provider 的 apiKey 为空/未配置 | 启动时跳过该 provider（打印警告），不 panic | — |
+| 端口 8001 已被占用 | 尝试 8002、8003……直到可用，打印日志 | — |
+| providers.json 文件损坏 / 不存在 | 使用默认配置（port 8001, providers 为空列表），不 panic | — |
+
+## MVP 范围声明
+
+以下特性不在 MVP 范围内，文档中仅为占位或后续迭代预留：
+- **Cost 统计**：`cost: { input:0, output:0, ... }` 为占位值，MVP 不做费用计算
+- **Session ID 管理**：`session_start` 事件监听和 session 文件写入沿用现有 `local-provider.ts` 行为，MVP 结束后可移除
+- **非 OpenAI 格式转换**：anthropic / gemini 等非 OpenAI 兼容 provider 需通过格式转换网关（如 OpenRouter）接入
 
 ## 性能保证
 
