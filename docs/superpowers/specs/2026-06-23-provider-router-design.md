@@ -67,6 +67,28 @@ pi 注册 provider 时通过 `api` 字段决定请求格式。注册为 `api: "o
 
 **MVP 只对接 OpenAI 兼容的 provider**。anthropic、gemini 等非 OpenAI 格式的后端通过 `baseUrl` 指向格式转换网关（如 OpenRouter / litellm / one-api）来接入，TUI 不感知格式差异。格式转换层作为后续迭代。
 
+### Bridge 模式
+
+某些本地代理工具（如 `cc-switch`、`one-api`、`litellm proxy`）已自包含路由和鉴权逻辑。此时 TUI 应退化为**纯透传桥接**，不做任何请求检查、model 解析或 header 注入：
+
+```json
+{
+  "id": "cc-switch",
+  "name": "CC Switch",
+  "bridge": true,
+  "baseUrl": "http://127.0.0.1:5000",
+  "models": []  // bridge 模式下忽略
+}
+```
+
+当 `bridge: true` 时：
+- 所有 `POST /v1/chat/completions` → `POST http://127.0.0.1:5000/v1/chat/completions`
+- 所有 `GET /v1/models` → `GET http://127.0.0.1:5000/v1/models`
+- **不解析 body**，**不替换 header**，**不按 model 路由**
+- 完整的请求/响应字节流透传
+
+一个 `providers.json` 中只能有一个 bridge provider 处于活跃状态。当 bridge 启用时，按 model 路由的非 bridge provider 被忽略（视图上可读，但流量走 bridge）。
+
 示例：要使用 Claude，在 `providers.json` 中配置 OpenRouter：
 
 ```json
@@ -89,6 +111,13 @@ Headers: { Authorization: "Bearer LOCAL_API_KEY", Content-Type: "application/jso
 Body: { model: "deepseek-v4-flash", messages: [...], stream: true }
 
 处理流程:
+
+**Bridge 模式**（当 active provider 设置了 `bridge: true`）：
+1. 跳过 body 解析，跳过 model 匹配
+2. 直接 POST 到 `{baseUrl}/v1/chat/completions`
+3. 请求/响应字节流透传，不注入任何 header，不读 body
+
+**标准模式**（按 model 路由）：
 1. 解析 JSON body，提取 model = "deepseek-v4-flash"
 2. 遍历 providers.json，找到包含此 model 的 provider → deepseek
 3. 构造转发请求:
@@ -150,6 +179,13 @@ Body: { model: "deepseek-v4-flash", messages: [...], stream: true }
           "contextWindow": 200000
         }
       ]
+    },
+    {
+      "id": "cc-switch",
+      "name": "CC Switch",
+      "bridge": true,
+      "baseUrl": "http://127.0.0.1:5000",
+      "models": []
     }
   ]
 }
@@ -231,6 +267,7 @@ export default async function (pi: ExtensionAPI) {
 │ PROVIDER (1) ◈ 路由在线 :8001                        │
 │ ◆ deepseek  (当前)                                   │
 │ ○ openrouter                                         │
+│ ○ cc-switch 🔗 桥接                                  │
 │ MODEL  deepseek-v4-flash  ←                         │
 │        deepseek-v4-pro                               │
 └──────────────────────────────────────────────────────┘
@@ -278,6 +315,8 @@ TUI 退出时:
 | provider 的 apiKey 为空/未配置 | 启动时跳过该 provider（打印警告），不 panic | — |
 | 端口 8001 已被占用 | 尝试 8002、8003……直到可用，打印日志 | — |
 | providers.json 文件损坏 / 不存在 | 使用默认配置（port 8001, providers 为空列表），不 panic | — |
+| bridge 模式 + body 解析 | bridge 模式下不解析 body，无此错误路径 | — |
+| 多个 bridge provider 同时存在 | 启动时警告，只取第一个 bridge | — |
 
 ## MVP 范围声明
 
