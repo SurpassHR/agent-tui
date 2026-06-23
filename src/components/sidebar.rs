@@ -270,7 +270,7 @@ impl Sidebar {
                     format!("○ {}  ({} models)", p.name, cnt)
                 };
                 if p.bridge { text.push_str(" 🔗"); }
-                lines.push(Line::from(Span::from(text)).style(Style::default().fg(fg).bg(bg)));
+                lines.push(Line::from(vec![Span::from(text)]).style(ratatui::style::Style::default().fg(fg).bg(bg)));
             }
         }
 
