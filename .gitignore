@@ -28,4 +28,4 @@ Thumbs.db
 
 # Quick-design preview artifacts
 /.superpowers/
-.opencode/
+.opencode/.playwright-cli/
