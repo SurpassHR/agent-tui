@@ -1,0 +1,78 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - text: ▎右侧栏新增 SKILLS 区块 — 展示当前可用的 agent skills 列表
+    - text: SKILLS 插入在 AGENTS 和 TASKS 之间，可键盘上下选中
+  - generic [ref=e3]:
+    - generic [ref=e4]:
+      - generic [ref=e5]: ACTIVE SESSION
+      - generic [ref=e6]:
+        - generic [ref=e7]: ●
+        - generic [ref=e8]: 首页重构讨论
+        - generic [ref=e9]: sess_8a3f
+        - generic [ref=e10]: 12条
+      - generic [ref=e11]: 工作区
+      - generic [ref=e12]: ▼
+      - generic [ref=e13]: 📁 agent-tui (5)
+      - generic [ref=e14]: ├─ ● 首页重构讨论 12条
+      - generic [ref=e15]: ├─ ○ 修复空状态 8条
+      - generic [ref=e16]: └─ ○ 添加认证流程 5条
+      - generic [ref=e17]: MODEL deepseek-v4-flash @openrouter
+    - generic [ref=e18]:
+      - generic [ref=e19]: pi
+      - generic [ref=e20]: ─
+      - generic [ref=e21]: 你好！今天有什么可以帮你的？
+      - generic [ref=e22]: 你
+      - generic [ref=e23]: ─
+      - generic [ref=e24]: 帮我看看项目的目录结构
+      - generic [ref=e25]: ────────────────────────────
+      - generic [ref=e26]:
+        - generic [ref=e27]: ">"
+        - generic [ref=e28]: █
+    - generic [ref=e29]:
+      - generic [ref=e30]: AGENTS (3)
+      - generic [ref=e31]:
+        - generic [ref=e32]: ●
+        - generic [ref=e33]: pi
+        - generic [ref=e34]: idle
+      - generic [ref=e35]:
+        - generic [ref=e36]:
+          - generic [ref=e37]: ○
+          - text: scout
+          - generic [ref=e38]: 代码侦察
+        - generic [ref=e39]:
+          - generic [ref=e40]: ○
+          - text: worker
+          - generic [ref=e41]: 代码实现
+        - generic [ref=e42]:
+          - generic [ref=e43]: ○
+          - text: reviewer
+          - generic [ref=e44]: 代码审查
+      - generic [ref=e45]: ▎SKILLS (16)
+      - generic [ref=e46]:
+        - generic [ref=e47]:
+          - generic [ref=e48]: ⚡
+          - text: brainstorming
+          - generic [ref=e49]: 创意
+        - generic [ref=e50]:
+          - generic [ref=e51]: 🎨
+          - text: frontend-design
+          - generic [ref=e52]: 设计
+        - generic [ref=e53]:
+          - generic [ref=e54]: 🧪
+          - text: tdd
+          - generic [ref=e55]: 测试
+        - generic [ref=e56]:
+          - generic [ref=e57]: 📋
+          - text: report-search
+          - generic [ref=e58]: 研究
+        - generic [ref=e59]:
+          - generic [ref=e60]: 📦
+          - text: neat-freak
+          - generic [ref=e61]: 维护
+        - generic [ref=e62]: … 还有 11 个
+      - generic [ref=e63]: ─
+      - generic [ref=e64]: TASKS
+      - generic [ref=e65]: ○ 暂无任务
+  - generic [ref=e66]:
+    - generic [ref=e67]: "> Ctrl+C quit; │ Ctrl+Z abort; │ Tab focus;"
+    - generic [ref=e68]: 100%/1.0M | ↑0 ↓0 | $0

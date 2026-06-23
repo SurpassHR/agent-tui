@@ -31,9 +31,6 @@ pub struct Sidebar {
     pub session_id: String,
     /// 当前会话消息数量
     pub message_count: usize,
-    // 模型信息
-    pub model_name: Option<String>,
-    pub provider: Option<String>,
     // 工作区树数据（由 sync_components 每次渲染前写入）
     pub workspaces: Vec<WorkspaceNode>,
     // 焦点与导航
@@ -43,10 +40,17 @@ pub struct Sidebar {
     pub subsection: SidebarSubsection,
     /// 选区状态（由 tui.rs 在每帧渲染前写入）
     pub selection: SelectionState,
+    // Provider 路由数据
+    pub providers: Vec<crate::provider::ProviderInfo>,
+    pub router_running: bool,
+    pub current_model: String,
+    pub provider_cursor: usize,
+    pub model_cursor: usize,
+    pub selecting_model: bool,
 }
 
-/// 底部 footer 固定行数（仅 MODEL 区 + 分隔线）
-const FOOTER_LINES: u16 = 3;
+/// 底部 provider 区最小行数（动态扩展）
+const FOOTER_LINES: u16 = 8;
 
 impl Sidebar {
     /// 计算工作区的滚动偏移，使光标保持在可见区域内
@@ -197,34 +201,119 @@ impl Sidebar {
         (lines, ws_count, sess_count)
     }
 
-    /// 底部模型 + Token 信息（固定区域）
-    /// `width` 为区域宽度，用于绘制全宽分割线
+    /// 底部 Provider + MODEL 区块 — PROVIDER 在上，MODEL 跟随切换
     fn render_footer(&self, width: u16, theme: &Theme) -> Vec<Line<'static>> {
-        let model_name = self.model_name.as_deref().unwrap_or("--");
-        let provider = self.provider.as_deref().unwrap_or("--");
-
-        // 全宽分割线
         let sep = "─".repeat(width.saturating_sub(1).max(1) as usize);
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        let focused = self.has_focus && self.subsection == SidebarSubsection::Provider;
 
-        let model_title = if self.has_focus && self.subsection == SidebarSubsection::Model {
+        // ── 全宽分隔线 ──
+        lines.push(Line::from(vec![Span::from(sep.clone()).fg(theme.border_dim)]));
+
+        // ── PROVIDER 区块 ──
+        let status = if self.router_running {
+            format!(" ◈ :8001")
+        } else {
+            " ◇ offline".to_string()
+        };
+        let is_on_providers = focused && !self.selecting_model;
+        let p_title = if is_on_providers {
             Line::from(vec![
                 "▎".to_string().fg(theme.accent),
-                "MODEL  ".to_string().fg(theme.accent).bold(),
-                model_name.to_string().fg(theme.accent),
-                format!("  @{}", provider).fg(theme.text_dim),
+                format!("PROVIDER ({})", self.providers.len()).fg(theme.accent).bold(),
+                Span::from(status).fg(if self.router_running { theme.success } else { theme.text_dim }),
             ])
         } else {
-            Line::from(vec![
-                Span::from(" MODEL  ").fg(theme.heading).bold(),
-                Span::from(model_name.to_string()).fg(theme.accent),
-                Span::from(format!("  @{}", provider)).fg(theme.text_dim),
-            ])
+            let mut s = vec![
+                Span::from(" "),
+                Span::from(format!("PROVIDER ({})", self.providers.len())).fg(theme.heading).bold(),
+            ];
+            if self.router_running {
+                s.push(Span::from(status).fg(theme.success));
+            }
+            Line::from(s)
+        };
+        lines.push(p_title);
+
+        if self.providers.is_empty() {
+            lines.push(Line::from(" ○ 无配置".to_string().fg(theme.text_dim)));
+        } else {
+            for (i, p) in self.providers.iter().enumerate() {
+                let is_active = if self.current_model.is_empty() {
+                    i == 0
+                } else {
+                    p.models.iter().any(|m| m.id == self.current_model)
+                };
+                let is_provider_selected = is_on_providers && i == self.provider_cursor;
+                let (fg, bg) = if is_provider_selected {
+                    (theme.selection_fg, theme.highlight_bg)
+                } else if is_active {
+                    (theme.accent, theme.bg)
+                } else {
+                    (theme.text_dim, theme.bg)
+                };
+                let cnt = p.models.len();
+                let mut text = if is_active {
+                    format!("◆ {}  ({} models)", p.name, cnt)
+                } else {
+                    format!("○ {}  ({} models)", p.name, cnt)
+                };
+                if p.bridge { text.push_str(" 🔗"); }
+                lines.push(Line::from(Span::from(text)).style(Style::default().fg(fg).bg(bg)));
+            }
+        }
+
+        // ── MODEL 区块（独立跟随 active provider） ──
+        let active_provider = if self.current_model.is_empty() {
+            self.providers.first()
+        } else {
+            self.providers.iter().find(|p| p.models.iter().any(|m| m.id == self.current_model))
         };
 
-        vec![
-            Line::from(vec![Span::from(sep).fg(theme.border_dim)]),
-            model_title,
-        ]
+        if let Some(ap) = active_provider {
+            lines.push(Line::from(vec![Span::from(sep.clone()).fg(theme.border_dim)]));
+
+            let is_on_models = focused && self.selecting_model;
+            let m_title = if is_on_models {
+                Line::from(vec![
+                    "▎".to_string().fg(theme.accent),
+                    format!("MODEL  {}", ap.id).fg(theme.accent).bold(),
+                    Span::from(format!("  {} models", ap.models.len())).fg(theme.text_dim),
+                ])
+            } else {
+                Line::from(vec![
+                    Span::from(" MODEL  "),
+                    Span::from(ap.id.clone()).fg(theme.accent).bold(),
+                    Span::from(format!("  {} models", ap.models.len())).fg(theme.text_dim),
+                ])
+            };
+            lines.push(m_title);
+
+            for (mi, m) in ap.models.iter().enumerate() {
+                let is_model_active = self.current_model == m.id;
+                let is_model_selected = is_on_models && mi == self.model_cursor;
+                let (mf, mb) = if is_model_selected {
+                    (theme.selection_fg, theme.highlight_bg)
+                } else if is_model_active {
+                    (theme.success, theme.bg)
+                } else {
+                    (theme.text_dim, theme.bg)
+                };
+                let marker = if is_model_active { " ←" } else { "" };
+                let ctx = if m.context_window >= 1_000_000 {
+                    format!("{}M", m.context_window / 1_000_000)
+                } else {
+                    format!("{}K", m.context_window / 1000)
+                };
+                lines.push(Line::from(
+                    Span::from(format!("  {} [{}] {} {}{}",
+                        if is_model_active { "◆" } else { "○" },
+                        m.tier, ctx, m.id, marker))
+                ).style(Style::default().fg(mf).bg(mb)));
+            }
+        }
+
+        lines
     }
 }
 

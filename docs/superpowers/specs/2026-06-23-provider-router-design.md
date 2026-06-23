@@ -77,7 +77,11 @@ pi 注册 provider 时通过 `api` 字段决定请求格式。注册为 `api: "o
   "name": "CC Switch",
   "bridge": true,
   "baseUrl": "http://127.0.0.1:5000",
-  "models": []  // bridge 模式下忽略
+  "models": [
+    { "id": "claude-opus-4-8", "name": "Claude Opus 4", "contextWindow": 200000, "tier": "T3" },
+    { "id": "claude-sonnet-4-6", "name": "Claude Sonnet 4", "contextWindow": 200000, "tier": "T2" },
+    { "id": "claude-haiku-4-5", "name": "Claude Haiku 4", "contextWindow": 200000, "tier": "T1" }
+  ]
 }
 ```
 
@@ -157,13 +161,22 @@ Body: { model: "deepseek-v4-flash", messages: [...], stream: true }
           "id": "deepseek-v4-flash",
           "name": "DeepSeek Flash",
           "contextWindow": 128000,
-          "reasoning": true
+          "reasoning": false,
+          "tier": "T1"
         },
         {
           "id": "deepseek-v4-pro",
           "name": "DeepSeek Pro",
           "contextWindow": 128000,
-          "reasoning": true
+          "reasoning": true,
+          "tier": "T3"
+        },
+        {
+          "id": "deepseek-v4-ultra",
+          "name": "DeepSeek Ultra",
+          "contextWindow": 256000,
+          "reasoning": true,
+          "tier": "T2"
         }
       ]
     },

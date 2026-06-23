@@ -107,7 +107,7 @@ pub enum SidebarSubsection {
     ActiveSession,
     #[default]
     Workspace,
-    Model,
+    Provider,
 }
 
 /// 主视图子区
@@ -173,6 +173,18 @@ pub struct TuiState {
     pub selection: SelectionState,
     /// subagent 列表（从 agents/*.md 解析）
     pub subagents: Vec<SubAgentInfo>,
+    /// HTTP Router 运行状态
+    pub router_running: bool,
+    /// Provider 配置
+    pub providers: Vec<crate::provider::ProviderInfo>,
+    /// 当前选中模型
+    pub current_model: String,
+    /// Provider 列表中光标位置
+    pub provider_cursor: usize,
+    /// 模型列表中光标位置
+    pub model_cursor: usize,
+    /// 是否正在选择模型（展开状态）
+    pub selecting_model: bool,
     /// skill 列表（从 skills/*/SKILL.md 解析）
     pub skills: Vec<SkillInfo>,
     /// Agent 面板内 skill 列表选中光标
@@ -240,6 +252,12 @@ impl TuiState {
             skill_cursor: 0,
             mcps: Vec::new(),
             mcp_cursor: 0,
+            router_running: false,
+            providers: Vec::new(),
+            current_model: String::new(),
+            provider_cursor: 0,
+            model_cursor: 0,
+            selecting_model: false,
         }
     }
 
@@ -476,7 +494,7 @@ impl App {
                         let subs = [
                             SidebarSubsection::ActiveSession,
                             SidebarSubsection::Workspace,
-                            SidebarSubsection::Model,
+                            SidebarSubsection::Provider,
                         ];
                         let current = self.tui.sidebar_subsection;
                         let idx = subs.iter().position(|s| *s == current).unwrap_or(1);
@@ -662,8 +680,13 @@ impl App {
         } else {
             self.tui.sidebar.session_id.clear();
         }
-        self.tui.sidebar.model_name = self.runtime.model_name.clone();
-        self.tui.sidebar.provider = self.runtime.provider.clone();
+        // 同步 provider 数据到 sidebar
+        self.tui.sidebar.providers.clone_from(&self.tui.providers);
+        self.tui.sidebar.router_running = self.tui.router_running;
+        self.tui.sidebar.current_model.clone_from(&self.tui.current_model);
+        self.tui.sidebar.provider_cursor = self.tui.provider_cursor;
+        self.tui.sidebar.model_cursor = self.tui.model_cursor;
+        self.tui.sidebar.selecting_model = self.tui.selecting_model;
         self.tui.sidebar.message_count = self
             .active_agent
             .as_ref()

@@ -1,0 +1,43 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]: 初始状态：选中 deepseek，按 Enter 查看详情
+  - generic [ref=e3]:
+    - generic [ref=e4]:
+      - generic [ref=e5]:
+        - generic [ref=e6]:
+          - generic [ref=e7]: ACTIVE SESSION
+          - generic [ref=e8]: ● 首页重构讨论
+          - generic [ref=e10]: 工作区
+          - generic [ref=e11]: ▼ 📁 agent-tui (5)
+          - generic [ref=e12]: ├─ ● 首页重构讨论 12条
+          - generic [ref=e13]: └─ ○ 添加认证流程 5条
+          - generic [ref=e15]:
+            - generic [ref=e16]: ▎PROVIDER (2) ◈ :8001
+            - generic [ref=e17] [cursor=pointer]: ◆ deepseek (2 models)
+            - generic [ref=e18]: MODEL deepseek-v4-flash ←
+            - generic [ref=e19] [cursor=pointer]: ○ cc-switch 🔗 bridge
+            - generic [ref=e20] [cursor=pointer]: ＋ 添加 provider
+        - generic [ref=e21]:
+          - generic [ref=e22]: pi
+          - generic [ref=e23]: ─
+          - generic [ref=e24]: 你好！今天有什么可以帮你的？
+          - generic [ref=e25]: 你
+          - generic [ref=e26]: ─
+          - generic [ref=e27]: 帮我看看项目的目录结构
+          - generic [ref=e29]: ────────────────────────────
+          - generic [ref=e30]: "> █"
+        - generic [ref=e31]:
+          - generic [ref=e32]: AGENTS (3)
+          - generic [ref=e33]: ● pi idle
+          - generic [ref=e34]: SKILLS (17)
+          - generic [ref=e35]: MCPS (3)
+          - generic [ref=e36]: TASKS
+      - generic [ref=e37]:
+        - generic [ref=e38]: "> Ctrl+C quit; │ Enter 查看 provider; │ ＋ 添加"
+        - generic [ref=e39]: 80%/128K | ↑0 ↓0 | $0
+    - generic [ref=e40]:
+      - heading "交互说明" [level=3] [ref=e41]
+      - generic [ref=e42]: Enter — 展开选中 provider 的详情面板
+      - generic [ref=e43]: → — 进入模型选择模式
+      - generic [ref=e44]: ＋ — 添加新 provider
+      - generic [ref=e45]: Esc — 关闭面板 / 收起
+      - generic [ref=e46]: 点击下方 provider 行测试各面板

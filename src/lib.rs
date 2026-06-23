@@ -26,6 +26,7 @@ pub mod config;
 pub mod errors;
 pub mod logging;
 pub mod message;
+pub mod provider;
 pub mod selection;
 pub mod theme;
 pub mod tui;

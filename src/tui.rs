@@ -227,6 +227,44 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
     // 扫描 mcp.json，填充 MCP server 列表
     app.populate_mcps();
 
+    // 启动 Provider Router
+    {
+        let config_path = crate::provider::config_path();
+        let provider_cfg = crate::provider::ProviderConfig::load(&config_path);
+        app.tui.providers.clone_from(&provider_cfg.providers);
+        if let Some(ref m) = provider_cfg.current_model {
+            app.tui.current_model.clone_from(m);
+        }
+        let shared = crate::provider::SharedConfig::new(tokio::sync::RwLock::new(provider_cfg));
+
+        // 生成 local-provider.ts
+        let ts_content = crate::provider::generate_local_provider_ts(
+            &*shared.read().await, shared.read().await.port
+        );
+        // 写入 pi extensions 目录
+        let pi_home = std::env::var("PI_CODING_AGENT_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| {
+                std::env::var("HOME").map(|h| std::path::PathBuf::from(h).join(".pi").join("agent"))
+                    .unwrap_or_default()
+            });
+        let ext_dir = pi_home.join("extensions");
+        let _ = std::fs::create_dir_all(&ext_dir);
+        let _ = std::fs::write(ext_dir.join("local-provider.ts"), &ts_content);
+        tracing::info!("local-provider.ts generated with {} models", shared.read().await.providers.iter().map(|p| p.models.len()).sum::<usize>());
+
+        // 启动 axum router
+        let router_shared = shared.clone();
+        app.tui.router_running = true;
+        tokio::spawn(async move {
+            if let Err(e) = crate::provider::router::start_router(router_shared).await {
+                tracing::error!("Provider router failed: {}", e);
+            }
+        });
+        // 给 axum 一点时间绑定端口
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
     let agent_id = app.active_agent.clone().unwrap_or_default();
     let mut input_buffer = String::new();
 
@@ -499,6 +537,59 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                         }
 
                         // ── MainView + Messages 子区：↑/↓ 消息切换，Enter 弹出 ──
+                        // Sidebar + Provider: up/down select provider, Enter expand models
+                        _ if *focus == crate::app::FocusPanel::Sidebar
+                            && app.tui.sidebar_subsection
+                                == crate::app::SidebarSubsection::Provider =>
+                        {
+                            match key.code {
+                                crossterm::event::KeyCode::Up => {
+                                    if app.tui.selecting_model {
+                                        let cur = app.tui.model_cursor;
+                                        if cur > 0 {
+                                            app.tui.model_cursor = cur - 1;
+                                        }
+                                    } else {
+                                        let cur = app.tui.provider_cursor;
+                                        if cur > 0 {
+                                            app.tui.provider_cursor = cur - 1;
+                                        }
+                                    }
+                                }
+                                crossterm::event::KeyCode::Down => {
+                                    if app.tui.selecting_model {
+                                        let cur = app.tui.model_cursor;
+                                        let total = app.tui.providers.get(app.tui.provider_cursor)
+                                            .map(|p| p.models.len()).unwrap_or(0);
+                                        if cur + 1 < total {
+                                            app.tui.model_cursor = cur + 1;
+                                        }
+                                    } else {
+                                        let cur = app.tui.provider_cursor;
+                                        if cur + 1 < app.tui.providers.len() {
+                                            app.tui.provider_cursor = cur + 1;
+                                        }
+                                    }
+                                }
+                                crossterm::event::KeyCode::Enter | crossterm::event::KeyCode::Right => {
+                                    if !app.tui.selecting_model {
+                                        let has_models = app.tui.providers.get(app.tui.provider_cursor)
+                                            .map(|p| !p.models.is_empty()).unwrap_or(false);
+                                        if has_models {
+                                            app.tui.selecting_model = true;
+                                            app.tui.model_cursor = 0;
+                                        }
+                                    }
+                                }
+                                crossterm::event::KeyCode::Left | crossterm::event::KeyCode::Esc => {
+                                    if app.tui.selecting_model {
+                                        app.tui.selecting_model = false;
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+
                         _ if *focus == crate::app::FocusPanel::MainView
                             && app.tui.main_view_subsection
                                 == crate::app::MainViewSubsection::Messages =>
