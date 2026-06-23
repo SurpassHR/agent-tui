@@ -543,103 +543,95 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                             && app.tui.sidebar_subsection
                                 == crate::app::SidebarSubsection::Provider =>
                         {
-                            // If provider popup is open, handle it first
-                            if app.tui.provider_popup.is_some() {
+                            if let Some(popup_idx) = app.tui.provider_popup {
+                                // Popup is open: only Esc to close, Enter to activate
                                 match key.code {
                                     crossterm::event::KeyCode::Esc => {
                                         app.tui.provider_popup = None;
                                     }
                                     crossterm::event::KeyCode::Enter => {
-                                        if let Some(idx) = app.tui.provider_popup {
-                                            if let Some(p) = app.tui.providers.get(idx) {
-                                                if let Some(first) = p.models.first() {
-                                                    app.tui.current_model = first.id.clone();
-                                                }
+                                        if let Some(p) = app.tui.providers.get(popup_idx) {
+                                            if let Some(first) = p.models.first() {
+                                                app.tui.current_model = first.id.clone();
                                             }
                                         }
                                         app.tui.provider_popup = None;
                                     }
                                     _ => {}
                                 }
-                                continue;
-                            }
-
-                            match key.code {
-                                crossterm::event::KeyCode::Up => {
-                                    if app.tui.selecting_model {
-                                        let cur = app.tui.model_cursor;
-                                        if cur > 0 { app.tui.model_cursor = cur - 1; }
-                                    } else {
-                                        let cur = app.tui.provider_cursor;
-                                        if cur > 0 { app.tui.provider_cursor = cur - 1; }
-                                    }
-                                }
-                                crossterm::event::KeyCode::Down => {
-                                    if app.tui.selecting_model {
-                                        let cur = app.tui.model_cursor;
-                                        let total = app.tui.providers.get(app.tui.provider_cursor)
-                                            .map(|p| p.models.len()).unwrap_or(0);
-                                        if cur + 1 < total { app.tui.model_cursor = cur + 1; }
-                                    } else {
-                                        let cur = app.tui.provider_cursor;
-                                        if cur + 1 < app.tui.providers.len() { app.tui.provider_cursor = cur + 1; }
-                                    }
-                                }
-                                crossterm::event::KeyCode::Right => {
-                                    // Expand model list
-                                    if !app.tui.selecting_model {
-                                        if app.tui.providers.get(app.tui.provider_cursor)
-                                            .map(|p| !p.models.is_empty()).unwrap_or(false)
-                                        {
-                                            app.tui.selecting_model = true;
-                                            app.tui.model_cursor = 0;
+                            } else {
+                                // Normal navigation
+                                match key.code {
+                                    crossterm::event::KeyCode::Up => {
+                                        if app.tui.selecting_model {
+                                            let cur = app.tui.model_cursor;
+                                            if cur > 0 { app.tui.model_cursor = cur - 1; }
+                                        } else {
+                                            let cur = app.tui.provider_cursor;
+                                            if cur > 0 { app.tui.provider_cursor = cur - 1; }
                                         }
                                     }
-                                }
-                                crossterm::event::KeyCode::Enter => {
-                                    if app.tui.selecting_model {
-                                        // Select model then open popup
-                                        if let Some(p) = app.tui.providers.get(app.tui.provider_cursor) {
-                                            if let Some(m) = p.models.get(app.tui.model_cursor) {
-                                                app.tui.current_model = m.id.clone();
-                                                app.tui.provider_popup = Some(app.tui.provider_cursor);
-                                                tracing::debug!("provider_popup set (model select)");
+                                    crossterm::event::KeyCode::Down => {
+                                        if app.tui.selecting_model {
+                                            let cur = app.tui.model_cursor;
+                                            let total = app.tui.providers.get(app.tui.provider_cursor)
+                                                .map(|p| p.models.len()).unwrap_or(0);
+                                            if cur + 1 < total { app.tui.model_cursor = cur + 1; }
+                                        } else {
+                                            let cur = app.tui.provider_cursor;
+                                            if cur + 1 < app.tui.providers.len() { app.tui.provider_cursor = cur + 1; }
+                                        }
+                                    }
+                                    crossterm::event::KeyCode::Right => {
+                                        if !app.tui.selecting_model {
+                                            if app.tui.providers.get(app.tui.provider_cursor)
+                                                .map(|p| !p.models.is_empty()).unwrap_or(false)
+                                            {
+                                                app.tui.selecting_model = true;
+                                                app.tui.model_cursor = 0;
                                             }
                                         }
-                                    } else {
-                                        // Enter on provider: open detail popup
-                                        let idx = app.tui.provider_cursor;
-                                        app.tui.provider_popup = Some(idx);
-                                        tracing::debug!("provider_popup set to {:?} (enter on provider)", idx);
                                     }
-                                }
-                                crossterm::event::KeyCode::Left | crossterm::event::KeyCode::Esc => {
-                                    if app.tui.selecting_model {
-                                        app.tui.selecting_model = false;
+                                    crossterm::event::KeyCode::Enter => {
+                                        if app.tui.selecting_model {
+                                            if let Some(p) = app.tui.providers.get(app.tui.provider_cursor) {
+                                                if let Some(m) = p.models.get(app.tui.model_cursor) {
+                                                    app.tui.current_model = m.id.clone();
+                                                    app.tui.provider_popup = Some(app.tui.provider_cursor);
+                                                }
+                                            }
+                                        } else {
+                                            app.tui.provider_popup = Some(app.tui.provider_cursor);
+                                        }
                                     }
-                                }
-                                crossterm::event::KeyCode::Char('+') => {
-                                    if !app.tui.selecting_model {
-                                        let default = crate::provider::ProviderInfo {
-                                            id: "new-provider".into(), name: "New Provider".into(),
-                                            bridge: false, base_url: "https://api.openai.com/v1".into(),
-                                            api_key: String::new(),
-                                            models: vec![crate::provider::ModelInfo {
-                                                id: "gpt-4o".into(), name: "GPT-4o".into(),
-                                                context_window: 128000, reasoning: true, tier: "T3".into(),
-                                            }],
-                                        };
-                                        app.tui.providers.push(default);
-                                        let path = crate::provider::config_path();
-                                        let cfg = crate::provider::ProviderConfig {
-                                            port: 8001,
-                                            current_model: Some(app.tui.current_model.clone()),
-                                            providers: app.tui.providers.clone(),
-                                        };
-                                        crate::provider::ProviderConfig::save(&path, &cfg);
+                                    crossterm::event::KeyCode::Left | crossterm::event::KeyCode::Esc => {
+                                        if app.tui.selecting_model {
+                                            app.tui.selecting_model = false;
+                                        }
                                     }
+                                    crossterm::event::KeyCode::Char('+') => {
+                                        if !app.tui.selecting_model {
+                                            let default = crate::provider::ProviderInfo {
+                                                id: "new-provider".into(), name: "New Provider".into(),
+                                                bridge: false, base_url: "https://api.openai.com/v1".into(),
+                                                api_key: String::new(),
+                                                models: vec![crate::provider::ModelInfo {
+                                                    id: "gpt-4o".into(), name: "GPT-4o".into(),
+                                                    context_window: 128000, reasoning: true, tier: "T3".into(),
+                                                }],
+                                            };
+                                            app.tui.providers.push(default);
+                                            let path = crate::provider::config_path();
+                                            let cfg = crate::provider::ProviderConfig {
+                                                port: 8001,
+                                                current_model: Some(app.tui.current_model.clone()),
+                                                providers: app.tui.providers.clone(),
+                                            };
+                                            crate::provider::ProviderConfig::save(&path, &cfg);
+                                        }
+                                    }
+                                    _ => {}
                                 }
-                                _ => {}
                             }
                         }
 
