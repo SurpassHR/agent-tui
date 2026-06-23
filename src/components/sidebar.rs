@@ -211,8 +211,10 @@ impl Sidebar {
         lines.push(Line::from(vec![Span::from(sep.clone()).fg(theme.border_dim)]));
 
         // ── PROVIDER 区块 ──
-        let status = if self.router_running {
+        let status = if self.router_running && !self.providers.is_empty() {
             format!(" ◈ :8001")
+        } else if self.router_running {
+            " ◇ no providers".to_string()
         } else {
             " ◇ offline".to_string()
         };
