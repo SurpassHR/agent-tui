@@ -238,14 +238,14 @@ impl Sidebar {
         lines.push(p_title);
 
         if self.providers.is_empty() {
-            lines.push(Line::from(" ○ 无配置".to_string().fg(theme.text_dim)));
+            // Empty state: first item is "add provider" action
             if is_on_providers {
                 lines.push(Line::from(
-                    Span::from(" [+] add provider").fg(theme.accent)
-                ));
+                    Span::from(" ◆ [+] add provider").fg(theme.selection_fg)
+                ).style(ratatui::style::Style::default().bg(theme.highlight_bg)));
             } else {
                 lines.push(Line::from(
-                    Span::from(" [+] add provider").fg(theme.text_dim)
+                    Span::from(" ○ [+] add provider").fg(theme.text_dim)
                 ));
             }
         } else {
