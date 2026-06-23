@@ -489,7 +489,9 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
 
                         // Esc: 关闭 Popup
                         crossterm::event::KeyCode::Esc => {
-                            if app.tui.popup.visible {
+                            if app.tui.provider_popup.is_some() {
+                                app.tui.provider_popup = None;
+                            } else if app.tui.popup.visible {
                                 app.tui.popup.visible = false;
                             }
                         }
@@ -542,6 +544,28 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                             && app.tui.sidebar_subsection
                                 == crate::app::SidebarSubsection::Provider =>
                         {
+                            // If provider popup is open, handle it first
+                            if app.tui.provider_popup.is_some() {
+                                match key.code {
+                                    crossterm::event::KeyCode::Esc => {
+                                        app.tui.provider_popup = None;
+                                    }
+                                    crossterm::event::KeyCode::Enter => {
+                                        // Activate this provider
+                                        if let Some(idx) = app.tui.provider_popup {
+                                            if let Some(p) = app.tui.providers.get(idx) {
+                                                if let Some(first) = p.models.first() {
+                                                    app.tui.current_model = first.id.clone();
+                                                }
+                                            }
+                                        }
+                                        app.tui.provider_popup = None;
+                                    }
+                                    _ => {}
+                                }
+                                continue;
+                            }
+
                             match key.code {
                                 crossterm::event::KeyCode::Up => {
                                     if app.tui.selecting_model {
@@ -571,7 +595,7 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                                         }
                                     }
                                 }
-                                crossterm::event::KeyCode::Enter | crossterm::event::KeyCode::Right => {
+                                crossterm::event::KeyCode::Right => {
                                     if !app.tui.selecting_model {
                                         let has_models = app.tui.providers.get(app.tui.provider_cursor)
                                             .map(|p| !p.models.is_empty()).unwrap_or(false);
@@ -580,6 +604,31 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                                             app.tui.model_cursor = 0;
                                         }
                                     }
+                                }
+                                crossterm::event::KeyCode::Enter => {
+                                    if app.tui.selecting_model {
+                                        // Select model
+                                        if let Some(p) = app.tui.providers.get(app.tui.provider_cursor) {
+                                            if let Some(m) = p.models.get(app.tui.model_cursor) {
+                                                app.tui.current_model = m.id.clone();
+                                                // Optionally open popup to confirm
+                                                app.tui.provider_popup = Some(app.tui.provider_cursor);
+                                            }
+                                        }
+                                    } else {
+                                        let has_models = app.tui.providers.get(app.tui.provider_cursor)
+                                            .map(|p| !p.models.is_empty()).unwrap_or(false);
+                                        if has_models {
+                                            app.tui.selecting_model = true;
+                                            app.tui.model_cursor = 0;
+                                        } else {
+                                            app.tui.provider_popup = Some(app.tui.provider_cursor);
+                                        }
+                                    }
+                                }
+                                crossterm::event::KeyCode::Char(' ') if !app.tui.selecting_model => {
+                                    // Space on a provider: open detail popup
+                                    app.tui.provider_popup = Some(app.tui.provider_cursor);
                                 }
                                 crossterm::event::KeyCode::Left | crossterm::event::KeyCode::Esc => {
                                     if app.tui.selecting_model {

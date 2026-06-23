@@ -68,7 +68,7 @@ impl Component for Popup {
 }
 
 /// 计算居中矩形（相对指定区域的居中百分比）
-fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+pub fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     let v_layout = Layout::vertical([
         Constraint::Fill(1),
         Constraint::Percentage(percent_y),

@@ -13,6 +13,8 @@ use crate::components::sidebar::Sidebar;
 use crate::errors::Result;
 use crate::message::{ChatMessage, ChatRole};
 use crate::theme::Theme;
+use ratatui::text::{Line, Span};
+use ratatui::style::Stylize;
 
 /// Session 信息
 #[derive(Debug, Clone, Default)]
@@ -181,6 +183,8 @@ pub struct TuiState {
     pub current_model: String,
     /// Provider 列表中光标位置
     pub provider_cursor: usize,
+    /// Provider 详情 popup：None=关闭, Some(idx)=显示第 idx 个 provider
+    pub provider_popup: Option<usize>,
     /// 模型列表中光标位置
     pub model_cursor: usize,
     /// 是否正在选择模型（展开状态）
@@ -258,6 +262,7 @@ impl TuiState {
             provider_cursor: 0,
             model_cursor: 0,
             selecting_model: false,
+            provider_popup: None,
         }
     }
 
@@ -761,6 +766,48 @@ impl App {
 
         // Popup 浮层（最高 Z-index，最后渲染）
         self.tui.popup.render(f, columns[1], theme);
+
+        // Provider 详情 Popup（最高 Z-index）
+        if let Some(idx) = self.tui.provider_popup {
+            if idx < self.tui.providers.len() {
+                let p = &self.tui.providers[idx];
+                let popup_area = crate::components::popup::centered_rect(65, 55, f.area());
+                f.render_widget(ratatui::widgets::Clear, popup_area);
+                let block = ratatui::widgets::Block::default()
+                    .title(format!(" {} {} ", if p.bridge { "\u{1f517}" } else { "\u{25c6}" }, p.name))
+                    .borders(ratatui::widgets::Borders::ALL)
+                    .border_type(ratatui::widgets::BorderType::Plain)
+                    .border_style(theme.border);
+                let inner = block.inner(popup_area);
+                f.render_widget(&block, popup_area);
+                let mut ln: Vec<Line<'static>> = Vec::new();
+                ln.push(Line::from(vec![
+                    Span::from("  ID       ").fg(theme.text_dim),
+                    Span::from(p.id.clone()).fg(theme.text),
+                ]));
+                ln.push(Line::from(vec![
+                    Span::from("  Base URL ").fg(theme.text_dim),
+                    Span::from(p.base_url.clone()).fg(theme.text_dim),
+                ]));
+                ln.push(Line::from(vec![
+                    Span::from("  mode     ").fg(theme.text_dim),
+                    Span::from(if p.bridge { "bridge" } else { "standard" }).fg(theme.accent),
+                ]));
+                ln.push(Line::from(""));
+                ln.push(Line::from(Span::from(format!("  models ({})", p.models.len())).fg(theme.heading).bold()));
+                for m in &p.models {
+                    let ctx = if m.context_window >= 1_000_000 {
+                        format!("{}M", m.context_window / 1_000_000)
+                    } else {
+                        format!("{}K", m.context_window / 1000)
+                    };
+                    ln.push(Line::from(Span::from(format!("    o {:25} [{}] {:>6}", m.id, m.tier, ctx)).fg(theme.text_dim)));
+                }
+                ln.push(Line::from(""));
+                ln.push(Line::from(Span::from("  [Esc] close  [Enter] activate").fg(theme.text_dim)));
+                f.render_widget(ratatui::widgets::Paragraph::new(ln).style(ratatui::style::Style::default().bg(theme.bg)), inner);
+            } else { self.tui.provider_popup = None; }
+        }
 
         // 渲染后将组件中收集的选中文本同步回主 selection
         //（apply_selection 修改的是组件的克隆，mouse up 读的是主 selection）
