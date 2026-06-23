@@ -216,23 +216,31 @@ export default async function (pi: ExtensionAPI) {
 
 ## TUI 界面
 
-右侧栏新增 PROVIDER 区块：
+左侧栏底部的 MODEL 区块**替换为 PROVIDER 区块**：
 
 ```
-PROVIDERS (2)
-◆ deepseek  (当前)
-○ openrouter
-
-MODEL
-  deepseek-v4-flash  ← 当前选中
-  deepseek-v4-pro
-
-Status: ● 路由在线 (127.0.0.1:8001)
+┌─ LEFT SIDEBAR (40) ─────────────────────────────────┐
+│ ACTIVE SESSION                                       │
+│ ● 首页重构讨论                                       │
+│                                                      │
+│ 工作区                                               │
+│ ▼ 📁 agent-tui (5)                                   │
+│   ├─ ● 首页重构讨论                                  │
+│   …                                                  │
+│──────────────────────────────────────────────────────│
+│ PROVIDER (1) ◈ 路由在线 :8001                        │
+│ ◆ deepseek  (当前)                                   │
+│ ○ openrouter                                         │
+│ MODEL  deepseek-v4-flash  ←                         │
+│        deepseek-v4-pro                               │
+└──────────────────────────────────────────────────────┘
 ```
 
 - `◆` / `○` 表示 provider 启用/未使用
-- MODEL 区展示当前可用模型列表
-- 底部显示路由状态
+- `◈ 路由在线 :8001` 指示 HTTP Router 运行状态
+- 焦点系统新增 `SidebarSubsection::Provider`，替代原有的 `Model`
+- 焦点在 Provider 子区时 ↑/↓ 选择 provider，Enter 展开模型列表，再 ↑/↓ 选模型
+- 选中模型即时生效，通过 RPC 通知 pi
 
 ## 进程生命周期
 
