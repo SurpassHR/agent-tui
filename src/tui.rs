@@ -630,6 +630,34 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                                     // Space on a provider: open detail popup
                                     app.tui.provider_popup = Some(app.tui.provider_cursor);
                                 }
+                                crossterm::event::KeyCode::Char('+') if !app.tui.selecting_model => {
+                                    // + key: add a default provider to get started
+                                    let default = crate::provider::ProviderInfo {
+                                        id: "new-provider".to_string(),
+                                        name: "New Provider".to_string(),
+                                        bridge: false,
+                                        base_url: "https://api.openai.com/v1".to_string(),
+                                        api_key: String::new(),
+                                        models: vec![
+                                            crate::provider::ModelInfo {
+                                                id: "gpt-4o".to_string(),
+                                                name: "GPT-4o".to_string(),
+                                                context_window: 128000,
+                                                reasoning: true,
+                                                tier: "T3".to_string(),
+                                            },
+                                        ],
+                                    };
+                                    app.tui.providers.push(default);
+                                    // Save to file
+                                    let path = crate::provider::config_path();
+                                    let cfg = crate::provider::ProviderConfig {
+                                        port: 8001,
+                                        current_model: Some(app.tui.current_model.clone()),
+                                        providers: app.tui.providers.clone(),
+                                    };
+                                    crate::provider::ProviderConfig::save(&path, &cfg);
+                                }
                                 crossterm::event::KeyCode::Left | crossterm::event::KeyCode::Esc => {
                                     if app.tui.selecting_model {
                                         app.tui.selecting_model = false;

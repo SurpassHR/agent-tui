@@ -263,6 +263,13 @@ impl Sidebar {
             }
         }
 
+        // Add provider hint (when focused)
+        if is_on_providers {
+            lines.push(Line::from(
+                Span::from("  + add provider  [Space]").fg(theme.text_dim)
+            ));
+        }
+
         // ── MODEL 区块（独立跟随 active provider） ──
         let active_provider = if self.current_model.is_empty() {
             self.providers.first()
