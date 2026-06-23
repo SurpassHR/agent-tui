@@ -239,6 +239,15 @@ impl Sidebar {
 
         if self.providers.is_empty() {
             lines.push(Line::from(" ○ 无配置".to_string().fg(theme.text_dim)));
+            if is_on_providers {
+                lines.push(Line::from(
+                    Span::from(" [+] add provider").fg(theme.accent)
+                ));
+            } else {
+                lines.push(Line::from(
+                    Span::from(" [+] add provider").fg(theme.text_dim)
+                ));
+            }
         } else {
             for (i, p) in self.providers.iter().enumerate() {
                 let is_active = if self.current_model.is_empty() {

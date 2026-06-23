@@ -689,6 +689,11 @@ impl App {
         self.tui.sidebar.providers.clone_from(&self.tui.providers);
         self.tui.sidebar.router_running = self.tui.router_running;
         self.tui.sidebar.current_model.clone_from(&self.tui.current_model);
+        // Clamp provider_cursor to valid range
+        let max_provider = self.tui.providers.len().saturating_sub(1);
+        if self.tui.provider_cursor > max_provider {
+            self.tui.provider_cursor = max_provider;
+        }
         self.tui.sidebar.provider_cursor = self.tui.provider_cursor;
         self.tui.sidebar.model_cursor = self.tui.model_cursor;
         self.tui.sidebar.selecting_model = self.tui.selecting_model;
