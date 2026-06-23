@@ -76,6 +76,22 @@ pub struct SubAgentInfo {
     pub model: String,
 }
 
+/// skill 定义（从 skills/*/SKILL.md YAML frontmatter 解析）
+#[derive(Debug, Clone)]
+pub struct SkillInfo {
+    pub name: String,
+    pub description: String,
+}
+
+/// MCP server 定义（从 mcp.json / mcp-cache.json 解析）
+#[derive(Debug, Clone)]
+pub struct McpInfo {
+    pub name: String,
+    pub command: String,
+    /// 缓存 server 的工具数（无 command 时用）
+    pub tool_count: usize,
+}
+
 /// 聚焦的面板
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum FocusPanel {
@@ -107,6 +123,8 @@ pub enum MainViewSubsection {
 pub enum AgentPanelSubsection {
     #[default]
     Agents,
+    Skills,
+    Mcps,
     Tasks,
 }
 
@@ -155,6 +173,14 @@ pub struct TuiState {
     pub selection: SelectionState,
     /// subagent 列表（从 agents/*.md 解析）
     pub subagents: Vec<SubAgentInfo>,
+    /// skill 列表（从 skills/*/SKILL.md 解析）
+    pub skills: Vec<SkillInfo>,
+    /// Agent 面板内 skill 列表选中光标
+    pub skill_cursor: usize,
+    /// MCP server 列表（从 mcp.json 解析）
+    pub mcps: Vec<McpInfo>,
+    /// Agent 面板内 MCP 列表选中光标
+    pub mcp_cursor: usize,
 }
 
 /// 鼠标选中所在的栏
@@ -210,6 +236,10 @@ impl TuiState {
             scroll_mode: ScrollMode::TailFollow,
             selection: SelectionState::default(),
             subagents: Vec::new(),
+            skills: Vec::new(),
+            skill_cursor: 0,
+            mcps: Vec::new(),
+            mcp_cursor: 0,
         }
     }
 
@@ -463,11 +493,13 @@ impl App {
                     FocusPanel::AgentPanel => {
                         let subs = [
                             AgentPanelSubsection::Agents,
+                            AgentPanelSubsection::Skills,
+                            AgentPanelSubsection::Mcps,
                             AgentPanelSubsection::Tasks,
                         ];
                         let current = self.tui.agent_panel_subsection;
                         let idx = subs.iter().position(|s| *s == current).unwrap_or(0);
-                        let next = ((idx as i32 + dir).rem_euclid(2)) as usize;
+                        let next = ((idx as i32 + dir).rem_euclid(4)) as usize;
                         self.tui.agent_panel_subsection = subs[next];
                     }
                 }
@@ -648,6 +680,10 @@ impl App {
         self.tui.main_view.subsection = self.tui.main_view_subsection;
         self.tui.agent_panel.subsection = self.tui.agent_panel_subsection;
         self.tui.agent_panel.cursor = self.tui.agent_cursor;
+        self.tui.agent_panel.skills.clone_from(&self.tui.skills);
+        self.tui.agent_panel.skill_cursor = self.tui.skill_cursor;
+        self.tui.agent_panel.mcps.clone_from(&self.tui.mcps);
+        self.tui.agent_panel.mcp_cursor = self.tui.mcp_cursor;
         self.tui.main_view.message_cursor = self.tui.message_cursor;
         self.tui.main_view.scroll_mode = self.tui.scroll_mode;
         // 同步工作区数据到 sidebar 组件
@@ -846,6 +882,101 @@ impl App {
 
         self.tui.subagents = agents;
     }
+
+    /// 扫描 skills 目录解析 skill 列表
+    pub fn populate_skills(&mut self) {
+        let mut skills = Vec::new();
+        let skills_dir = std::path::PathBuf::from("/home/hr/.agents/skills");
+
+        if skills_dir.exists() {
+            if let Ok(entries) = std::fs::read_dir(&skills_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if !path.is_dir() {
+                        continue;
+                    }
+                    let skill_md = path.join("SKILL.md");
+                    if !skill_md.exists() {
+                        continue;
+                    }
+                    let content = match std::fs::read_to_string(&skill_md) {
+                        Ok(c) => c,
+                        _ => continue,
+                    };
+                    if let Some(info) = parse_skill_md(&content) {
+                        skills.push(info);
+                    }
+                }
+            }
+        }
+
+        skills.sort_by(|a, b| a.name.cmp(&b.name));
+        self.tui.skills = skills;
+    }
+
+    /// 扫描 mcp.json + mcp-cache.json 解析 MCP server 列表
+    pub fn populate_mcps(&mut self) {
+        let mut mcps = Vec::new();
+
+        // 定位 pi 配置目录（PI_CODING_AGENT_DIR 或 ~/.pi/agent）
+        let pi_home = std::env::var("PI_CODING_AGENT_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| {
+                std::env::var("HOME")
+                    .or_else(|_| std::env::var("USERPROFILE"))
+                    .map(|h| std::path::PathBuf::from(h).join(".pi").join("agent"))
+                    .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            });
+
+        // 来源 1：mcp.json（用户显式配置的 server）
+        let config_path = pi_home.join("mcp.json");
+        if config_path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&config_path) {
+                if let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&content) {
+                    if let Some(servers) = cfg.get("mcpServers").and_then(|v| v.as_object()) {
+                        for (name, info) in servers {
+                            let command = info
+                                .get("command")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("?")
+                                .to_string();
+                            mcps.push(McpInfo { name: name.clone(), command, tool_count: 0 });
+                        }
+                    }
+                }
+            }
+        }
+
+        // 来源 2：mcp-cache.json（已连接的 server 缓存）
+        let cache_path = pi_home.join("mcp-cache.json");
+        if cache_path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&cache_path) {
+                if let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&content) {
+                    if let Some(servers) = cfg.get("servers").and_then(|v| v.as_object()) {
+                        for (name, info) in servers {
+                            // 跳过已在 mcp.json 中定义的 server
+                            if mcps.iter().any(|m: &McpInfo| m.name == *name) {
+                                continue;
+                            }
+                            let tool_count = info
+                                .get("tools")
+                                .and_then(|v| v.as_array())
+                                .map(|a| a.len())
+                                .unwrap_or(0);
+                            mcps.push(McpInfo {
+                                name: name.clone(),
+                                command: String::new(),
+                                tool_count,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        mcps.sort_by(|a, b| a.name.cmp(&b.name));
+        self.tui.mcps = mcps;
+    }
 }
 
 /// 解析 agent .md 文件的 YAML frontmatter
@@ -881,6 +1012,34 @@ fn parse_agent_md(content: &str) -> Option<SubAgentInfo> {
         description,
         model,
     })
+}
+
+/// 解析 skill SKILL.md 文件的 YAML frontmatter
+fn parse_skill_md(content: &str) -> Option<SkillInfo> {
+    let content = content.trim();
+    if !content.starts_with("---") {
+        return None;
+    }
+    let rest = content.strip_prefix("---")?.trim_start();
+    let end = rest.find("---")?;
+    let yaml_text = &rest[..end];
+
+    let mut name = String::new();
+    let mut description = String::new();
+
+    for line in yaml_text.lines() {
+        let line = line.trim();
+        if let Some(val) = line.strip_prefix("name:") {
+            name = val.trim().to_string();
+        } else if let Some(val) = line.strip_prefix("description:") {
+            description = val.trim().to_string();
+        }
+    }
+
+    if name.is_empty() {
+        return None;
+    }
+    Some(SkillInfo { name, description })
 }
 
 /// 获取 pi 相关目录

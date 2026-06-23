@@ -222,6 +222,10 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
     app.populate_workspaces();
     // 扫描 agents 目录，填充 subagent 列表
     app.populate_subagents();
+    // 扫描 skills 目录，填充 skill 列表
+    app.populate_skills();
+    // 扫描 mcp.json，填充 MCP server 列表
+    app.populate_mcps();
 
     let agent_id = app.active_agent.clone().unwrap_or_default();
     let mut input_buffer = String::new();
@@ -597,6 +601,53 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                                     let cur = app.tui.agent_cursor;
                                     if cur + 1 < total {
                                         app.tui.agent_cursor = cur + 1;
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        // ── AgentPanel + Skills 子区：↑/↓ 选择 skill ──
+                        _ if *focus == crate::app::FocusPanel::AgentPanel
+                            && app.tui.agent_panel_subsection
+                                == crate::app::AgentPanelSubsection::Skills =>
+                        {
+                            let total = app.tui.skills.len();
+                            let display_max = 6usize;
+                            match key.code {
+                                crossterm::event::KeyCode::Up if total > 0 => {
+                                    let cur = app.tui.skill_cursor;
+                                    if cur > 0 {
+                                        app.tui.skill_cursor = cur - 1;
+                                    }
+                                }
+                                crossterm::event::KeyCode::Down if total > 0 => {
+                                    let cur = app.tui.skill_cursor;
+                                    if cur + 1 < total && cur + 1 < display_max {
+                                        app.tui.skill_cursor = cur + 1;
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        // ── AgentPanel + Mcps 子区：↑/↓ 选择 MCP server ──
+                        _ if *focus == crate::app::FocusPanel::AgentPanel
+                            && app.tui.agent_panel_subsection
+                                == crate::app::AgentPanelSubsection::Mcps =>
+                        {
+                            let total = app.tui.mcps.len();
+                            match key.code {
+                                crossterm::event::KeyCode::Up if total > 0 => {
+                                    let cur = app.tui.mcp_cursor;
+                                    if cur > 0 {
+                                        app.tui.mcp_cursor = cur - 1;
+                                    }
+                                }
+                                crossterm::event::KeyCode::Down if total > 0 => {
+                                    let cur = app.tui.mcp_cursor;
+                                    if cur + 1 < total {
+                                        app.tui.mcp_cursor = cur + 1;
                                     }
                                 }
                                 _ => {}

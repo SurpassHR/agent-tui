@@ -5,14 +5,15 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use super::Component;
-use crate::app::{AgentPanelSubsection, AgentStatus, SelectionState, SubAgentInfo};
+use crate::app::{AgentPanelSubsection, AgentStatus, McpInfo, SelectionState, SkillInfo, SubAgentInfo};
 use crate::selection;
 use crate::theme::Theme;
 
-/// 右侧面板组件 — subagent 列表
+/// 右侧面板组件 — subagent 列表 + skill 列表
 ///
-/// 显示当前 pi agent 可调用的所有 subagent。
-/// 数据源：`~/.pi/agent/agents/*.md` 和 pi-subagents 内置定义。
+/// 显示当前 pi agent 可调用的所有 subagent 和可用 skills。
+/// subagent 数据源：`~/.pi/agent/agents/*.md` 和 pi-subagents 内置定义。
+/// skills 数据源：`/home/hr/.agents/skills/*/SKILL.md`
 #[derive(Default)]
 pub struct AgentPanel {
     pub active_agent: String,
@@ -24,6 +25,14 @@ pub struct AgentPanel {
     pub subsection: AgentPanelSubsection,
     /// subagent 选中光标（仅索引 subagents 列表，不含 pi agent）
     pub cursor: usize,
+    /// skill 列表
+    pub skills: Vec<SkillInfo>,
+    /// skill 选中光标
+    pub skill_cursor: usize,
+    /// MCP server 列表
+    pub mcps: Vec<McpInfo>,
+    /// MCP 选中光标
+    pub mcp_cursor: usize,
     /// 选区状态
     pub selection: SelectionState,
 }
@@ -117,6 +126,100 @@ impl Component for AgentPanel {
                 ])
                 .style(style),
             );
+        }
+
+        // ── SKILLS ──
+        lines.push(Line::from(""));
+        let skill_count = self.skills.len();
+        let skills_title = if self.has_focus && self.subsection == AgentPanelSubsection::Skills {
+            Line::from(vec![
+                "▎".to_string().fg(theme.accent),
+                format!("SKILLS ({})", skill_count).fg(theme.accent).bold(),
+            ])
+        } else {
+            Line::from(vec![
+                Span::from(" "),
+                Span::from(format!("SKILLS ({})", skill_count)).fg(theme.heading).bold(),
+            ])
+        };
+        lines.push(skills_title);
+
+        if skill_count == 0 {
+            lines.push(Line::from("○ 暂无".to_string().fg(theme.text_dim)));
+        } else {
+            let display_max = 6; // 最多显示 6 条，其余折叠
+            for (i, sk) in self.skills.iter().enumerate() {
+                if i >= display_max {
+                    break;
+                }
+                let is_selected = self.has_focus
+                    && self.subsection == AgentPanelSubsection::Skills
+                    && i == self.skill_cursor;
+                let (fg, bg) = if is_selected {
+                    (theme.selection_fg, theme.highlight_bg)
+                } else {
+                    (theme.text_dim, theme.bg)
+                };
+                let style = Style::default().fg(fg).bg(bg);
+                lines.push(
+                    Line::from(vec![
+                        Span::from("○ "),
+                        Span::from(sk.name.clone()),
+                    ])
+                    .style(style),
+                );
+            }
+            if skill_count > display_max {
+                lines.push(Line::from(
+                    format!("… 还有 {} 个", skill_count - display_max)
+                        .fg(theme.text_dim),
+                ));
+            }
+        }
+
+        // ── MCPS ──
+        lines.push(Line::from(""));
+        let mcp_count = self.mcps.len();
+        let mcps_title = if self.has_focus && self.subsection == AgentPanelSubsection::Mcps {
+            Line::from(vec![
+                "▎".to_string().fg(theme.accent),
+                format!("MCPS ({})", mcp_count).fg(theme.accent).bold(),
+            ])
+        } else {
+            Line::from(vec![
+                Span::from(" "),
+                Span::from(format!("MCPS ({})", mcp_count)).fg(theme.heading).bold(),
+            ])
+        };
+        lines.push(mcps_title);
+
+        if mcp_count == 0 {
+            lines.push(Line::from("○ 暂无".to_string().fg(theme.text_dim)));
+        } else {
+            for (i, mcp) in self.mcps.iter().enumerate() {
+                let is_selected = self.has_focus
+                    && self.subsection == AgentPanelSubsection::Mcps
+                    && i == self.mcp_cursor;
+                let (fg, bg) = if is_selected {
+                    (theme.selection_fg, theme.highlight_bg)
+                } else {
+                    (theme.text_dim, theme.bg)
+                };
+                let style = Style::default().fg(fg).bg(bg);
+                let detail = if mcp.command.is_empty() {
+                    format!("  ({} tools)", mcp.tool_count)
+                } else {
+                    format!("  {}", mcp.command)
+                };
+                lines.push(
+                    Line::from(vec![
+                        Span::from("◈ "),
+                        Span::from(mcp.name.clone()),
+                        Span::from(detail).fg(theme.text_dim),
+                    ])
+                    .style(style),
+                );
+            }
         }
 
         // ── TASKS ──
