@@ -806,10 +806,7 @@ mod tests {
 
         let buffer = terminal.backend().buffer();
         // 确认 "粗体" 文字出现在输出中
-        let has_bold_text = buffer
-            .content()
-            .iter()
-            .any(|c| c.symbol() == "粗");
+        let has_bold_text = buffer.content().iter().any(|c| c.symbol() == "粗");
         assert!(has_bold_text, "Bold text should be rendered in output");
     }
 

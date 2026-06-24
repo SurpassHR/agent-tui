@@ -41,7 +41,11 @@ pub fn render(text: &str, theme: &Theme) -> Vec<Line<'static>> {
 /// 快速检查文本是否包含 Markdown 语法标记，避免对于纯文本消息进行不必要的解析
 fn needs_markdown(text: &str) -> bool {
     // 仅扫描前 8KB，避免大文本性能损失
-    let scan = if text.len() > 8192 { &text[..8192] } else { text };
+    let scan = if text.len() > 8192 {
+        &text[..8192]
+    } else {
+        text
+    };
     scan.contains('*')
         || scan.contains('`')
         || scan.contains('#')
@@ -286,9 +290,7 @@ impl<'a> MarkdownRenderer<'a> {
             Tag::MetadataBlock(_) => {}
             Tag::HtmlBlock => {}
             Tag::FootnoteDefinition(_) => {}
-            Tag::DefinitionList
-            | Tag::DefinitionListTitle
-            | Tag::DefinitionListDefinition => {}
+            Tag::DefinitionList | Tag::DefinitionListTitle | Tag::DefinitionListDefinition => {}
         }
     }
 
@@ -408,15 +410,25 @@ impl<'a> MarkdownRenderer<'a> {
     }
 
     fn on_inline_code(&mut self, code: &str) {
+        if self.in_table {
+            self.table_cell_buf.push_str(code);
+            return;
+        }
+
         self.flush_inline_text();
         let style = Style::default()
             .fg(self.theme.text)
             .bg(self.theme.inline_code_bg);
-        self.current_spans.push(Span::styled(code.to_string(), style));
+        self.current_spans
+            .push(Span::styled(code.to_string(), style));
     }
 
     fn on_soft_break(&mut self) {
         if self.in_code_block {
+            return;
+        }
+        if self.in_table {
+            self.table_cell_buf.push(' ');
             return;
         }
         self.buf.push(' ');
@@ -485,18 +497,11 @@ impl<'a> MarkdownRenderer<'a> {
         let clean: String = text
             .split('\0')
             .enumerate()
-            .filter_map(|(i, s)| {
-                if i % 2 == 0 {
-                    Some(s)
-                } else {
-                    None
-                }
-            })
+            .filter_map(|(i, s)| if i % 2 == 0 { Some(s) } else { None })
             .collect::<Vec<_>>()
             .join("");
         if !clean.is_empty() {
-            self.current_spans
-                .push(Span::styled(clean, style));
+            self.current_spans.push(Span::styled(clean, style));
         }
     }
 
@@ -584,12 +589,7 @@ impl<'a> MarkdownRenderer<'a> {
             .fg(self.theme.text_dim)
             .add_modifier(Modifier::DIM);
 
-        let num_cols = self
-            .table_rows
-            .iter()
-            .map(|r| r.len())
-            .max()
-            .unwrap_or(0);
+        let num_cols = self.table_rows.iter().map(|r| r.len()).max().unwrap_or(0);
         if num_cols == 0 {
             return;
         }
@@ -623,12 +623,7 @@ impl<'a> MarkdownRenderer<'a> {
                         padding
                     };
                     let right = padding - left;
-                    format!(
-                        "{}{}{}",
-                        " ".repeat(left),
-                        text,
-                        " ".repeat(right)
-                    )
+                    format!("{}{}{}", " ".repeat(left), text, " ".repeat(right))
                 }
                 _ => {
                     // Left 或 None：左对齐
@@ -637,14 +632,8 @@ impl<'a> MarkdownRenderer<'a> {
             }
         };
 
-        // 渲染表格顶边框
-        let sep_line: String = col_widths
-            .iter()
-            .map(|w| "─".repeat(*w))
-            .collect::<Vec<_>>()
-            .join("─┼─");
         self.lines.push(Line::from(Span::styled(
-            format!("┌─{}─┐", sep_line),
+            table_border(&col_widths, '┌', '┬', '┐'),
             border_style,
         )));
 
@@ -670,32 +659,31 @@ impl<'a> MarkdownRenderer<'a> {
             let row_text = format!("│ {} │", cells.join(" │ "));
             self.lines.push(Line::from(Span::styled(row_text, style)));
 
-            // 表头后加分隔线
-            if is_header && ri == header_count - 1 && self.table_rows.len() > header_count {
-                let header_sep: String = col_widths
-                    .iter()
-                    .map(|w| "─".repeat(*w))
-                    .collect::<Vec<_>>()
-                    .join("─┼─");
+            // 每一行之间保持水平分隔，避免窄终端中表格内容读成连续段落。
+            if ri + 1 < self.table_rows.len() {
                 self.lines.push(Line::from(Span::styled(
-                    format!("├─{}─┤", header_sep),
+                    table_border(&col_widths, '├', '┼', '┤'),
                     border_style,
                 )));
             }
         }
 
         // 渲染底边框
-        let bottom_line: String = col_widths
-            .iter()
-            .map(|w| "─".repeat(*w))
-            .collect::<Vec<_>>()
-            .join("─┴─");
         self.lines.push(Line::from(Span::styled(
-            format!("└─{}─┘", bottom_line),
+            table_border(&col_widths, '└', '┴', '┘'),
             border_style,
         )));
         self.lines.push(Line::from(""));
     }
+}
+
+fn table_border(col_widths: &[usize], left: char, junction: char, right: char) -> String {
+    let segments = col_widths
+        .iter()
+        .map(|w| "─".repeat(w + 2))
+        .collect::<Vec<_>>()
+        .join(&junction.to_string());
+    format!("{left}{segments}{right}")
 }
 
 #[cfg(test)]
@@ -723,7 +711,10 @@ mod tests {
             })
         });
         assert!(
-            has_bold || lines.iter().any(|l| l.spans.iter().any(|s| s.content.contains("World"))),
+            has_bold
+                || lines
+                    .iter()
+                    .any(|l| l.spans.iter().any(|s| s.content.contains("World"))),
             "Should render bold text or at minimum preserve the content"
         );
     }
@@ -733,11 +724,9 @@ mod tests {
         let theme = Theme::cyan();
         let lines = render("Use `cargo build` to compile", &theme);
         // 内联代码应有特殊背景色
-        let has_code = lines.iter().any(|line| {
-            line.spans
-                .iter()
-                .any(|s| s.content.contains("cargo build"))
-        });
+        let has_code = lines
+            .iter()
+            .any(|line| line.spans.iter().any(|s| s.content.contains("cargo build")));
         assert!(has_code, "Should preserve inline code content");
     }
 
@@ -746,9 +735,9 @@ mod tests {
         let theme = Theme::cyan();
         let lines = render("# Hello", &theme);
         let has_heading = lines.iter().any(|line| {
-            line.spans
-                .iter()
-                .any(|s| s.content.contains("Hello") && s.style.add_modifier.contains(Modifier::BOLD))
+            line.spans.iter().any(|s| {
+                s.content.contains("Hello") && s.style.add_modifier.contains(Modifier::BOLD)
+            })
         });
         assert!(has_heading, "Heading should be bold");
     }
@@ -826,10 +815,7 @@ mod tests {
     fn test_table_with_alignment() {
         let theme = Theme::cyan();
         // 右对齐的数字列
-        let lines = render(
-            "| 项目 | 数量 |\n|:-----|-----:|\n| A | 123 |\n",
-            &theme,
-        );
+        let lines = render("| 项目 | 数量 |\n|:-----|-----:|\n| A | 123 |\n", &theme);
         let has_project = lines
             .iter()
             .any(|line| line.spans.iter().any(|s| s.content.contains("项目")));
@@ -843,11 +829,15 @@ mod tests {
     #[test]
     fn test_table_preserves_all_rows() {
         let theme = Theme::cyan();
-        let lines = render("| x | y |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n| 5 | 6 |\n", &theme);
+        let lines = render(
+            "| x | y |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n| 5 | 6 |\n",
+            &theme,
+        );
         let mut count_1 = 0;
         for line in &lines {
             for span in &line.spans {
-                if span.content.contains('1') || span.content.contains('3')
+                if span.content.contains('1')
+                    || span.content.contains('3')
                     || span.content.contains('5')
                 {
                     count_1 += 1;
@@ -855,5 +845,48 @@ mod tests {
             }
         }
         assert_eq!(count_1, 3, "All three data rows should be present");
+    }
+
+    #[test]
+    fn table_should_keep_inline_code_inside_cells() {
+        let theme = Theme::cyan();
+        let lines = render(
+            "| Commit | 说明 |\n|---|---|\n| `5670948` | 添加依赖 |\n| `1fca916` | 创建渲染器 |\n",
+            &theme,
+        );
+        let rendered = lines_to_text(&lines);
+
+        assert!(
+            rendered
+                .lines()
+                .any(|line| line.contains("5670948") && line.contains("添加依赖")),
+            "内联代码单元格应留在同一张表格行内：\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn table_should_render_horizontal_separator_between_body_rows() {
+        let theme = Theme::cyan();
+        let lines = render("| A | B |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n", &theme);
+        let rendered = lines_to_text(&lines);
+        let separator_count = rendered.lines().filter(|line| line.contains('├')).count();
+
+        assert!(
+            separator_count >= 2,
+            "表头和正文行之间都应有水平分隔线：\n{rendered}"
+        );
+    }
+
+    fn lines_to_text(lines: &[Line<'static>]) -> String {
+        lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }
