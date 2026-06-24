@@ -1538,9 +1538,9 @@ impl App {
                 {
                     let f_mode = editor.field_focus == 4;
                     let mode_label = if f_mode {
-                        format!(" ▎模式")
+                        " ▎模式".to_string()
                     } else {
-                        format!("  模式")
+                        "  模式".to_string()
                     };
                     ln.push(Line::from(
                         Span::from(mode_label)

@@ -108,7 +108,7 @@ impl ProviderConfig {
     }
 
     /// 获取活跃 provider（bridge 优先，否则按 current_model 匹配）
-    pub fn active_provider<'a>(&'a self) -> Option<&'a ProviderInfo> {
+    pub fn active_provider(&self) -> Option<&ProviderInfo> {
         // bridge provider 优先
         if let Some(bridge) = self.providers.iter().find(|p| p.bridge) {
             return Some(bridge);

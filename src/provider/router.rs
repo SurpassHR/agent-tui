@@ -181,7 +181,7 @@ async fn standard_chat_proxy(
         None => {
             return (
                 StatusCode::BAD_REQUEST,
-                format!("{{\"error\":\"invalid request: missing 'model' field\"}}"),
+                "{\"error\":\"invalid request: missing 'model' field\"}".to_string(),
             )
                 .into_response();
         }
@@ -225,7 +225,7 @@ async fn standard_chat_proxy(
 
             // 流式转发
             let body_stream = tokio_stream::StreamExt::map(stream, |chunk| {
-                chunk.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+                chunk.map_err(std::io::Error::other)
             });
 
             let streaming_body = axum::body::Body::from_stream(body_stream);
@@ -278,7 +278,7 @@ async fn proxy_request(client: &Client, target_url: &str, body: Body) -> Respons
             let stream = resp.bytes_stream();
 
             let body_stream = tokio_stream::StreamExt::map(stream, |chunk| {
-                chunk.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+                chunk.map_err(std::io::Error::other)
             });
 
             let mut response_headers = HeaderMap::new();
