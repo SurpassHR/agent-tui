@@ -30,7 +30,14 @@ pub struct SessionInfo {
     pub name: Option<String>,
 }
 
-/// 工作区节点（树形结构）
+/// 工作区树重命名/创建状态
+#[derive(Debug, Clone)]
+pub enum RenameState {
+    CreateSession { ws_idx: usize },
+    RenameSession { ws_idx: usize, si: usize },
+    RenameWorkspace { ws_idx: usize },
+    CreateWorkspace,
+}
 #[derive(Debug, Clone)]
 pub struct WorkspaceNode {
     pub name: String,
@@ -212,6 +219,32 @@ pub struct TuiState {
     pub mcp_cursor: usize,
     /// 持久化禁用标记（单元测试设为 true 以避免污染真实配置文件）
     pub persistence_disabled: bool,
+    /// AI 重命名：待发送给 pi 的 prompt（tui.rs 检测后通过 RPC 发出）
+    pub pending_ai_prompt: Option<String>,
+    /// 工作区重命名/创建状态（弹出输入模式）
+    pub workspace_rename: Option<RenameState>,
+    /// 重命名/创建时的输入缓冲区
+    pub rename_input: String,
+    /// 删除确认弹窗状态（None = 无待确认操作）
+    pub confirm_delete: Option<ConfirmDelete>,
+}
+
+/// 删除确认弹窗的待确认信息
+#[derive(Debug, Clone)]
+pub struct ConfirmDelete {
+    pub target: ConfirmDeleteTarget,
+}
+
+#[derive(Debug, Clone)]
+pub enum ConfirmDeleteTarget {
+    /// 删除工作区（含所有会话）
+    Workspace { index: usize, name: String },
+    /// 删除工作区下的指定会话
+    Session {
+        workspace_index: usize,
+        session_index: usize,
+        name: String,
+    },
 }
 
 /// 鼠标选中所在的栏
@@ -403,6 +436,10 @@ impl TuiState {
             provider_editor: None,
             models_fetch_rx: None,
             persistence_disabled: false,
+            pending_ai_prompt: None,
+            workspace_rename: None,
+            rename_input: String::new(),
+            confirm_delete: None,
         }
     }
 
@@ -1550,6 +1587,227 @@ impl App {
                 }
             },
 
+            // --- 工作区 CRUD ---
+            Action::CreateWorkspace(ref name) => {
+                let encoded = encode_workspace_name(name);
+                let sessions_dir = pi_sessions_dir();
+                let ws_dir = sessions_dir.join(&encoded);
+                if let Err(e) = std::fs::create_dir_all(&ws_dir) {
+                    tracing::error!("创建工作区目录失败: {} — {}", ws_dir.display(), e);
+                    self.tui.bottom_bar.status = format!("创建失败: {}", e);
+                } else {
+                    self.populate_workspaces();
+                    self.sync_components();
+                    self.tui.bottom_bar.status = format!("已创建工作区: {}", name);
+                }
+            }
+
+            Action::CreateSession {
+                workspace_index,
+                ref name,
+            } => {
+                if let Some(ws) = self.tui.workspaces.get(workspace_index) {
+                    // 找到工作区对应的磁盘目录
+                    let sessions_dir = pi_sessions_dir();
+                    let ws_raw = encode_workspace_name(&ws.name);
+                    // 编码后可能和已存在的目录略有不同，需要匹配实际目录名
+                    let actual_dir = std::fs::read_dir(&sessions_dir)
+                        .ok()
+                        .and_then(|entries| {
+                            entries.flatten().find_map(|e| {
+                                let p = e.path();
+                                if p.is_dir()
+                                    && p.file_name()
+                                        .map(|n| n.to_string_lossy().to_string())
+                                        .unwrap_or_default()
+                                        == ws_raw
+                                {
+                                    Some(p)
+                                } else {
+                                    None
+                                }
+                            })
+                        })
+                        .or_else(|| {
+                            // 如果没匹配到，尝试用更宽松的匹配
+                            std::fs::read_dir(&sessions_dir).ok().and_then(|entries| {
+                                entries.flatten().find_map(|e| {
+                                    let p = e.path();
+                                    if p.is_dir()
+                                        && decode_workspace_name(
+                                            &p.file_name()
+                                                .map(|n| n.to_string_lossy().to_string())
+                                                .unwrap_or_default(),
+                                        ) == ws.name
+                                    {
+                                        Some(p)
+                                    } else {
+                                        None
+                                    }
+                                })
+                            })
+                        });
+
+                    if let Some(ws_dir) = actual_dir {
+                        let session_id = uuid_v4_simple();
+                        let session_path = ws_dir.join(format!("{}.jsonl", session_id));
+                        // 创建空的 jsonl 文件
+                        if let Err(e) = std::fs::write(&session_path, "") {
+                            tracing::error!("创建会话文件失败: {} — {}", session_path.display(), e);
+                            self.tui.bottom_bar.status = format!("创建失败: {}", e);
+                        } else {
+                            self.populate_workspaces();
+                            self.sync_components();
+                            self.tui.bottom_bar.status = format!("已创建会话: {}", name);
+                        }
+                    } else {
+                        self.tui.bottom_bar.status = "未找到工作区目录".to_string();
+                    }
+                }
+            }
+
+            Action::DeleteWorkspace(index) => {
+                if let Some(ws) = self.tui.workspaces.get(index) {
+                    let sessions_dir = pi_sessions_dir();
+                    let ws_name = ws.name.clone();
+                    // 查找实际目录
+                    if let Some(ws_dir) =
+                        std::fs::read_dir(&sessions_dir).ok().and_then(|entries| {
+                            entries.flatten().find_map(|e| {
+                                let p = e.path();
+                                if p.is_dir()
+                                    && decode_workspace_name(
+                                        &p.file_name()
+                                            .map(|n| n.to_string_lossy().to_string())
+                                            .unwrap_or_default(),
+                                    ) == ws_name
+                                {
+                                    Some(p)
+                                } else {
+                                    None
+                                }
+                            })
+                        })
+                    {
+                        if let Err(e) = std::fs::remove_dir_all(&ws_dir) {
+                            tracing::error!("删除工作区目录失败: {} — {}", ws_dir.display(), e);
+                            self.tui.bottom_bar.status = format!("删除失败: {}", e);
+                        } else {
+                            self.populate_workspaces();
+                            self.sync_components();
+                            self.tui.bottom_bar.status = format!("已删除工作区: {}", ws_name);
+                        }
+                    }
+                }
+            }
+
+            Action::DeleteSession {
+                workspace_index,
+                session_index,
+            } => {
+                if let Some(ws) = self.tui.workspaces.get(workspace_index) {
+                    if let Some(sess) = ws.sessions.get(session_index) {
+                        if let Some(ref path) = sess.file_path {
+                            let name = sess.name.clone();
+                            if let Err(e) = std::fs::remove_file(path) {
+                                tracing::error!("删除会话文件失败: {} — {}", path, e);
+                                self.tui.bottom_bar.status = format!("删除失败: {}", e);
+                            } else {
+                                self.populate_workspaces();
+                                self.sync_components();
+                                self.tui.bottom_bar.status = format!("已删除会话: {}", name);
+                            }
+                        }
+                    }
+                }
+            }
+
+            Action::RenameWorkspace {
+                index,
+                ref new_name,
+            } => {
+                if let Some(ws) = self.tui.workspaces.get(index) {
+                    let old_name = ws.name.clone();
+                    let sessions_dir = pi_sessions_dir();
+                    if let Some(ws_dir) =
+                        std::fs::read_dir(&sessions_dir).ok().and_then(|entries| {
+                            entries.flatten().find_map(|e| {
+                                let p = e.path();
+                                if p.is_dir()
+                                    && decode_workspace_name(
+                                        &p.file_name()
+                                            .map(|n| n.to_string_lossy().to_string())
+                                            .unwrap_or_default(),
+                                    ) == old_name
+                                {
+                                    Some(p)
+                                } else {
+                                    None
+                                }
+                            })
+                        })
+                    {
+                        let new_encoded = encode_workspace_name(new_name);
+                        let new_dir = sessions_dir.join(&new_encoded);
+                        if let Err(e) = std::fs::rename(&ws_dir, &new_dir) {
+                            tracing::error!(
+                                "重命名工作区目录失败: {} -> {} — {}",
+                                ws_dir.display(),
+                                new_dir.display(),
+                                e
+                            );
+                            self.tui.bottom_bar.status = format!("重命名失败: {}", e);
+                        } else {
+                            self.populate_workspaces();
+                            self.sync_components();
+                            self.tui.bottom_bar.status =
+                                format!("「{}」→「{}」", old_name, new_name);
+                        }
+                    }
+                }
+            }
+
+            Action::RenameSession {
+                workspace_index,
+                session_index,
+                ref new_name,
+            } => {
+                if let Some(ws) = self.tui.workspaces.get(workspace_index) {
+                    if let Some(sess) = ws.sessions.get(session_index) {
+                        let old_name = sess.name.clone();
+                        // 仅更新数据模型中的名称（不修改 JSONL 文件内容）
+                        if let Some(w) = self.tui.workspaces.get_mut(workspace_index) {
+                            if let Some(s) = w.sessions.get_mut(session_index) {
+                                s.name = new_name.clone();
+                            }
+                        }
+                        self.sync_components();
+                        self.tui.bottom_bar.status = format!("「{}」→「{}」", old_name, new_name);
+                    }
+                }
+            }
+
+            Action::AiRenameSession {
+                workspace_index,
+                session_index,
+            } => {
+                if let Some(ws) = self.tui.workspaces.get(workspace_index) {
+                    if let Some(sess) = ws.sessions.get(session_index) {
+                        if let Some(ref path) = sess.file_path {
+                            match std::fs::read_to_string(path) {
+                                Ok(content) => {
+                                    let prompt = build_ai_rename_prompt(&content, &sess.name);
+                                    self.tui.pending_ai_prompt = Some(prompt);
+                                }
+                                Err(e) => {
+                                    tracing::error!("读取会话文件失败: {} — {}", path, e);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             _ => {
                 tracing::debug!("未处理的 action: {:?}", action);
             }
@@ -2331,6 +2589,146 @@ impl App {
                 .selected_text
                 .clone_from(&self.tui.agent_panel.selection.selected_text);
         }
+
+        // ═══ 工作区重命名/创建 Popup ═══
+        if let Some(ref state) = self.tui.workspace_rename {
+            use ratatui::layout::{Constraint, Direction, Layout};
+            use ratatui::style::{Style, Stylize};
+            use ratatui::widgets::{BorderType, Borders, Clear, Paragraph};
+
+            let ta = f.area();
+            let (title, hint) = match state {
+                RenameState::CreateWorkspace => ("新建工作区", "输入名称后 Enter 确认，Esc 取消"),
+                RenameState::CreateSession { .. } => {
+                    ("新建会话", "输入名称后 Enter 确认，Esc 取消")
+                }
+                RenameState::RenameWorkspace { .. } => {
+                    ("重命名工作区", "输入新名称后 Enter 确认，Esc 取消")
+                }
+                RenameState::RenameSession { .. } => (
+                    "重命名会话",
+                    "输入新名称后 Enter 确认 | Tab AI 自动命名 | Esc 取消",
+                ),
+            };
+
+            let v = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Fill(1),
+                    Constraint::Length(4),
+                    Constraint::Fill(1),
+                ])
+                .split(ta);
+            let h = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Fill(1),
+                    Constraint::Length(50),
+                    Constraint::Fill(1),
+                ])
+                .split(v[1]);
+            let pa = h[1];
+
+            let block = ratatui::widgets::Block::default()
+                .title(format!(" {} ", title))
+                .borders(Borders::ALL)
+                .border_type(BorderType::Plain)
+                .border_style(theme.border);
+            let inner = block.inner(pa);
+
+            f.render_widget(Clear, pa);
+            f.render_widget(&block, pa);
+
+            let cursor = if self.tui.workspace_rename.is_some() {
+                "█"
+            } else {
+                ""
+            };
+            let input_line = format!(" {}{} ", self.tui.rename_input, cursor);
+            f.render_widget(
+                Paragraph::new(Line::from(input_line.fg(theme.text)))
+                    .style(Style::default().bg(theme.bg)),
+                inner,
+            );
+
+            // 提示行
+            f.render_widget(
+                Paragraph::new(Line::from(hint.fg(theme.text_dim).dim()))
+                    .style(Style::default().bg(theme.bg)),
+                Rect::new(inner.x, inner.y + 1, inner.width, 1),
+            );
+        }
+
+        // ═══ 删除确认弹窗 ═══
+        if let Some(ref cd) = self.tui.confirm_delete {
+            use ratatui::layout::{Alignment, Constraint, Direction, Layout};
+            use ratatui::style::{Style, Stylize};
+            use ratatui::widgets::{BorderType, Borders, Clear, Paragraph};
+
+            let ta = f.area();
+            let (title, desc_lines): (&str, Vec<String>) = match &cd.target {
+                ConfirmDeleteTarget::Workspace { name, .. } => (
+                    "⚠ 确认删除工作区",
+                    vec![
+                        format!("确定要删除工作区「{}」及其所有会话吗？", name),
+                        "此操作不可撤销。".into(),
+                    ],
+                ),
+                ConfirmDeleteTarget::Session { name, .. } => (
+                    "⚠ 确认删除会话",
+                    vec![
+                        format!("确定要删除会话「{}」吗？", name),
+                        "此操作不可撤销。".into(),
+                    ],
+                ),
+            };
+
+            // 动态高度：空行 + 描述行 + 空行 + 提示行 + 上下各 1 内边距
+            let popup_height = (desc_lines.len() + 5) as u16;
+
+            let v = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Fill(1),
+                    Constraint::Length(popup_height),
+                    Constraint::Fill(1),
+                ])
+                .split(ta);
+            let h = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Fill(1),
+                    Constraint::Length(50),
+                    Constraint::Fill(1),
+                ])
+                .split(v[1]);
+            let pa = h[1];
+
+            let block = ratatui::widgets::Block::default()
+                .title(format!(" {} ", title))
+                .borders(Borders::ALL)
+                .border_type(BorderType::Plain)
+                .border_style(theme.warning);
+            let inner = block.inner(pa);
+
+            f.render_widget(Clear, pa);
+            f.render_widget(&block, pa);
+
+            let mut content: Vec<Line<'static>> = vec![Line::from("")];
+            for desc in &desc_lines {
+                content.push(Line::from(desc.clone().fg(theme.text)));
+            }
+            content.push(Line::from(""));
+            content.push(Line::from(
+                "[Enter] 确认删除    [Esc] 取消".fg(theme.text_dim).dim(),
+            ));
+            f.render_widget(
+                Paragraph::new(content)
+                    .alignment(Alignment::Center)
+                    .style(Style::default().bg(theme.bg)),
+                inner,
+            );
+        }
     }
 }
 
@@ -2996,6 +3394,81 @@ fn compute_diff_lines(old_text: &str, new_text: &str) -> Vec<crate::message::Dif
         });
     }
     lines
+}
+
+/// 将用户友好的工作区名称编码为 pi 目录格式
+///
+/// pi 编码实际路径为 `--home-hr-Projects-agent-tui--`，
+/// 手动创建的工作区使用 `--ws-{name}--` 格式以区分
+fn encode_workspace_name(name: &str) -> String {
+    // 用 --ws-{sanitized}-- 格式
+    let sanitized: String = name
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    format!("--ws-{}--", sanitized.trim_matches('-'))
+}
+
+/// 生成简单的 UUID（8 位 hex）
+fn uuid_v4_simple() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!("{:016x}", ts % 0xFFFFFFFFFFFFFFFFu128)
+}
+
+/// 构建 AI 重命名 prompt
+///
+/// 从会话 JSONL 内容中提取最近的消息，构造分析 prompt
+fn build_ai_rename_prompt(session_content: &str, current_name: &str) -> String {
+    let lines: Vec<&str> = session_content.lines().collect();
+    // 取最近 30 行
+    let recent: Vec<&str> = if lines.len() > 30 {
+        lines[lines.len() - 30..].to_vec()
+    } else {
+        lines
+    };
+    let _truncated = recent.join("\n");
+
+    // 提取用户问题和助手回复的关键信息
+    let mut user_texts: Vec<String> = Vec::new();
+    for line in &recent {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+            if let Some(msg) = v.get("message") {
+                let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
+                if role == "user" {
+                    if let Some(text) = msg
+                        .get("content")
+                        .and_then(|c| c.as_array())
+                        .and_then(|arr| arr.first())
+                        .and_then(|block| block.get("text"))
+                        .and_then(|t| t.as_str())
+                    {
+                        let t = text.trim();
+                        if t.len() > 80 {
+                            user_texts.push(format!("{}…", &t[..80]));
+                        } else {
+                            user_texts.push(t.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let user_summary = user_texts.join("\n  ");
+
+    format!(
+        "请为以下对话生成 3 个候选会话名称（简短、描述性的英文名，用连字符连接）。当前名称为「{current_name}」。\n\n对话概要:\n  {user_summary}\n\n请只输出 3 个候选名称，每行一个，不要编号或其他文字。"
+    )
 }
 
 #[cfg(test)]

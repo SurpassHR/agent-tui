@@ -533,6 +533,16 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                     app.render_tui(f);
                     Ok::<_, std::io::Error>(())
                 });
+
+                // 检查 AI 重命名 prompt 是否待发送
+                if let Some(prompt) = app.tui.pending_ai_prompt.take() {
+                    let _ = client
+                        .notify(serde_json::json!({
+                            "type": "prompt",
+                            "message": prompt,
+                        }))
+                        .await;
+                }
             }
 
             // 状态轮询（5 秒一次）
@@ -680,6 +690,112 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                     let focus = &app.tui.focus_panel;
 
                     match key.code {
+                        // ── 工作区重命名/创建输入拦截（最高优先级）──
+                        _ if app.tui.workspace_rename.is_some() => {
+                            match key.code {
+                                crossterm::event::KeyCode::Esc => {
+                                    app.tui.workspace_rename = None;
+                                    app.tui.rename_input.clear();
+                                    app.tui.bottom_bar.status = "已取消".into();
+                                }
+                                crossterm::event::KeyCode::Enter => {
+                                    let input = app.tui.rename_input.trim().to_string();
+                                    if !input.is_empty() {
+                                        let state = app.tui.workspace_rename.take();
+                                        app.tui.rename_input.clear();
+                                        match state {
+                                            Some(crate::app::RenameState::CreateWorkspace) => {
+                                                app.handle_action(
+                                                    Action::CreateWorkspace(input),
+                                                )
+                                                .await
+                                                .ok();
+                                            }
+                                            Some(
+                                                crate::app::RenameState::CreateSession {
+                                                    ws_idx,
+                                                },
+                                            ) => {
+                                                app.handle_action(
+                                                    Action::CreateSession {
+                                                        workspace_index: ws_idx,
+                                                        name: input,
+                                                    },
+                                                )
+                                                .await
+                                                .ok();
+                                            }
+                                            Some(
+                                                crate::app::RenameState::RenameWorkspace {
+                                                    ws_idx,
+                                                },
+                                            ) => {
+                                                app.handle_action(
+                                                    Action::RenameWorkspace {
+                                                        index: ws_idx,
+                                                        new_name: input,
+                                                    },
+                                                )
+                                                .await
+                                                .ok();
+                                            }
+                                            Some(
+                                                crate::app::RenameState::RenameSession {
+                                                    ws_idx,
+                                                    si,
+                                                },
+                                            ) => {
+                                                app.handle_action(
+                                                    Action::RenameSession {
+                                                        workspace_index: ws_idx,
+                                                        session_index: si,
+                                                        new_name: input,
+                                                    },
+                                                )
+                                                .await
+                                                .ok();
+                                            }
+                                            None => {}
+                                        }
+                                    } else {
+                                        app.tui.workspace_rename = None;
+                                        app.tui.rename_input.clear();
+                                    }
+                                }
+                                crossterm::event::KeyCode::Tab => {
+                                    // Tab: 对于 RenameSession，切换到 AI 模式
+                                    if let Some(
+                                        crate::app::RenameState::RenameSession {
+                                            ws_idx,
+                                            si,
+                                        },
+                                    ) = &app.tui.workspace_rename
+                                    {
+                                        let ws_idx = *ws_idx;
+                                        let si = *si;
+                                        app.tui.workspace_rename = None;
+                                        app.tui.rename_input.clear();
+                                        app.handle_action(
+                                            Action::AiRenameSession {
+                                                workspace_index: ws_idx,
+                                                session_index: si,
+                                            },
+                                        )
+                                        .await
+                                        .ok();
+                                        app.tui.bottom_bar.status =
+                                            "AI 正在分析会话内容…".into();
+                                    }
+                                }
+                                crossterm::event::KeyCode::Backspace => {
+                                    app.tui.rename_input.pop();
+                                }
+                                crossterm::event::KeyCode::Char(c) => {
+                                    app.tui.rename_input.push(c);
+                                }
+                                _ => {}
+                            }
+                        }
                         // ── Alt+方向键：面板切换 ──
                         crossterm::event::KeyCode::Left
                             if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) =>
@@ -776,9 +892,11 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                             app.agent_status = AgentStatus::Idle;
                         }
 
-                        // Esc: 退出详情视图 / 关闭 Popup / 编辑表单
+                        // Esc: 退出详情视图 / 关闭 Popup / 编辑表单 / 取消删除确认
                         crossterm::event::KeyCode::Esc => {
-                            if app.tui.main_view.completion_popup.is_some() {
+                            if app.tui.confirm_delete.is_some() {
+                                app.tui.confirm_delete = None;
+                            } else if app.tui.main_view.completion_popup.is_some() {
                                 app.tui.main_view.completion_popup = None;
                             } else if app.tui.main_view.entered_view.is_some() {
                                 app.handle_action(Action::ExitBlock).await.ok();
@@ -800,6 +918,38 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                             } else if app.tui.popup.visible {
                                 app.tui.popup.visible = false;
                             }
+                        }
+
+                        // ── 删除确认弹窗：Enter 确认 / n 取消 ──
+                        crossterm::event::KeyCode::Enter
+                            if app.tui.confirm_delete.is_some() =>
+                        {
+                            if let Some(cd) = app.tui.confirm_delete.take() {
+                                match cd.target {
+                                    crate::app::ConfirmDeleteTarget::Workspace { index, .. } => {
+                                        app.handle_action(Action::DeleteWorkspace(index))
+                                            .await
+                                            .ok();
+                                    }
+                                    crate::app::ConfirmDeleteTarget::Session {
+                                        workspace_index,
+                                        session_index,
+                                        ..
+                                    } => {
+                                        app.handle_action(Action::DeleteSession {
+                                            workspace_index,
+                                            session_index,
+                                        })
+                                        .await
+                                        .ok();
+                                    }
+                                }
+                            }
+                        }
+                        crossterm::event::KeyCode::Char('n')
+                            if app.tui.confirm_delete.is_some() =>
+                        {
+                            app.tui.confirm_delete = None;
                         }
 
                         // ── Sidebar + Workspace 子区：↑/↓/Enter ──
@@ -837,6 +987,91 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                                                 .await
                                                 .ok();
                                             }
+                                        }
+                                    }
+                                }
+                                // ── CRUD 快捷键 a/d/r ──
+                                crossterm::event::KeyCode::Char('a') => {
+                                    let cursor = app.tui.sidebar_cursor;
+                                    if let Some((is_ws, ws_idx, _sess_idx)) =
+                                        app.tui.sidebar_item_at(cursor)
+                                    {
+                                        if is_ws {
+                                            // 创建工作区
+                                            app.tui.bottom_bar.status =
+                                                "新建工作区: 输入名称后按 Enter".into();
+                                            // 使用输入框收集名称（临时方案：弹出 modal）
+                                            app.tui.workspace_rename = Some(
+                                                crate::app::RenameState::CreateWorkspace,
+                                            );
+                                        } else {
+                                            // 创建会话
+                                            app.tui.bottom_bar.status =
+                                                "新建会话: 输入名称后按 Enter".into();
+                                            app.tui.workspace_rename =
+                                                Some(crate::app::RenameState::CreateSession {
+                                                    ws_idx,
+                                                });
+                                        }
+                                    }
+                                }
+                                crossterm::event::KeyCode::Char('d') => {
+                                    let cursor = app.tui.sidebar_cursor;
+                                    if let Some((is_ws, ws_idx, sess_idx)) =
+                                        app.tui.sidebar_item_at(cursor)
+                                    {
+                                        if is_ws {
+                                            if let Some(ws) = app.tui.workspaces.get(ws_idx) {
+                                                app.tui.confirm_delete =
+                                                    Some(crate::app::ConfirmDelete {
+                                                        target:
+                                                            crate::app::ConfirmDeleteTarget::Workspace {
+                                                                index: ws_idx,
+                                                                name: ws.name.clone(),
+                                                            },
+                                                    });
+                                            }
+                                        } else if let Some(si) = sess_idx {
+                                            if let Some(session) = app
+                                                .tui
+                                                .workspaces
+                                                .get(ws_idx)
+                                                .and_then(|ws| ws.sessions.get(si))
+                                            {
+                                                app.tui.confirm_delete =
+                                                    Some(crate::app::ConfirmDelete {
+                                                        target:
+                                                            crate::app::ConfirmDeleteTarget::Session {
+                                                                workspace_index: ws_idx,
+                                                                session_index: si,
+                                                                name: session.name.clone(),
+                                                            },
+                                                    });
+                                            }
+                                        }
+                                    }
+                                }
+                                crossterm::event::KeyCode::Char('r') => {
+                                    let cursor = app.tui.sidebar_cursor;
+                                    if let Some((is_ws, ws_idx, sess_idx)) =
+                                        app.tui.sidebar_item_at(cursor)
+                                    {
+                                        if is_ws {
+                                            app.tui.workspace_rename =
+                                                Some(crate::app::RenameState::RenameWorkspace {
+                                                    ws_idx,
+                                                });
+                                            app.tui.bottom_bar.status =
+                                                "重命名工作区: 输入名称后按 Enter".into();
+                                        } else if let Some(si) = sess_idx {
+                                            app.tui.workspace_rename =
+                                                Some(crate::app::RenameState::RenameSession {
+                                                    ws_idx,
+                                                    si,
+                                                });
+                                            app.tui.bottom_bar.status =
+                                                "重命名会话: 输入名称后按 Enter，Tab 切换 AI 模式"
+                                                    .into();
                                         }
                                     }
                                 }
