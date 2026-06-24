@@ -62,6 +62,13 @@ fn translate_pi_events(event: PiEvent, agent_id: &str) -> Vec<Action> {
                     agent_id: agent_id.into(),
                     content: data.content.clone(),
                 });
+                // 若有错误信息，同时发出状态消息
+                if let Some(ref err) = data.error_message {
+                    actions.push(Action::AutoRetryStatus {
+                        agent_id: agent_id.into(),
+                        text: format!("错误: {}", err),
+                    });
+                }
             }
         }
         _ => {
@@ -125,6 +132,59 @@ fn translate_single_action(event: PiEvent, agent_id: &str) -> Option<Action> {
             Some(Action::AutoRetryStatus {
                 agent_id,
                 text: format!("Extension error: {}", error),
+            })
+        }
+
+        PiEvent::MessageEnd { message } => {
+            let agent_id = agent_id.to_string();
+            let text = message
+                .as_ref()
+                .and_then(|m| m.error_message.as_deref())
+                .unwrap_or("(message end)");
+            Some(Action::AutoRetryStatus {
+                agent_id,
+                text: format!("Message end: {}", text),
+            })
+        }
+
+        PiEvent::AutoRetryStart {
+            attempt,
+            max_attempts,
+            delay_ms,
+            error_message,
+        } => {
+            let agent_id = agent_id.to_string();
+            let err = error_message.as_deref().unwrap_or("unknown error");
+            Some(Action::AutoRetryStatus {
+                agent_id,
+                text: format!(
+                    "自动重试 {}/{} ({}ms 后): {}",
+                    attempt, max_attempts, delay_ms, err
+                ),
+            })
+        }
+
+        PiEvent::AutoRetryEnd { success, final_error } => {
+            let agent_id = agent_id.to_string();
+            if success {
+                Some(Action::AutoRetryStatus {
+                    agent_id,
+                    text: "重试成功".to_string(),
+                })
+            } else {
+                let err = final_error.as_deref().unwrap_or("unknown");
+                Some(Action::AutoRetryStatus {
+                    agent_id,
+                    text: format!("全部重试失败: {}", err),
+                })
+            }
+        }
+
+        PiEvent::MessageStart { role } => {
+            let agent_id = agent_id.to_string();
+            Some(Action::AutoRetryStatus {
+                agent_id,
+                text: format!("消息开始: role={}", role),
             })
         }
 
