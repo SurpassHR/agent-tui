@@ -630,6 +630,30 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                                 == crate::app::SidebarSubsection::Model =>
                         {
                             app.tui.handle_model_key(key.code);
+                            // 同步模型选择到 pi（通过 RPC set_model）
+                            if app.tui.model_just_switched {
+                                app.tui.model_just_switched = false;
+                                let model_id = app.tui.current_model.clone();
+                                if !model_id.is_empty() {
+                                    // 保存到 providers.json（路由器 SharedConfig 会读取）
+                                    let path = crate::provider::config_path();
+                                    let cfg = crate::provider::ProviderConfig {
+                                        port: app.tui.router_port,
+                                        current_model: Some(model_id.clone()),
+                                        providers: app.tui.providers.clone(),
+                                    };
+                                    crate::provider::ProviderConfig::save(&path, &cfg);
+                                    // 通知 pi 切换模型
+                                    let _ = client.request(
+                                        serde_json::json!({
+                                            "type": "set_model",
+                                            "provider": "local",
+                                            "modelId": model_id,
+                                        }),
+                                        std::time::Duration::from_secs(5),
+                                    ).await;
+                                }
+                            }
                         }
 
                         _ if *focus == crate::app::FocusPanel::MainView

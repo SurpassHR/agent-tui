@@ -194,6 +194,8 @@ pub struct TuiState {
     /// 模型列表中光标位置
     pub model_cursor: usize,
     pub model_search: String,
+    /// 标记用户刚在 MODEL 子区选择了模型，tui.rs 据此发送 RPC 给 pi
+    pub model_just_switched: bool,
     pub provider_editor: Option<ProviderEditor>,
     pub models_fetch_rx: Option<tokio::sync::oneshot::Receiver<Option<String>>>,
     /// skill 列表（从 skills/*/SKILL.md 解析）
@@ -388,6 +390,7 @@ impl TuiState {
             provider_cursor: 0,
             model_cursor: 0,
             model_search: String::new(),
+            model_just_switched: false,
             provider_popup: None,
             provider_editor: None,
             models_fetch_rx: None,
@@ -444,6 +447,7 @@ impl TuiState {
                     if let Some(p) = self.providers.get(popup_idx) {
                         if let Some(first) = p.models.first() {
                             self.current_model = first.id.clone();
+                            self.model_just_switched = true;
                         }
                     }
                     self.provider_popup = None;
@@ -546,6 +550,7 @@ impl TuiState {
                 let filtered = self.filtered_models();
                 if let Some(m) = filtered.get(self.model_cursor) {
                     self.current_model = m.id.clone();
+                    self.model_just_switched = true;
                 }
                 true
             }
