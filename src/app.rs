@@ -1109,7 +1109,7 @@ impl App {
             } => {
                 let msgs = self.messages.get(&agent_id);
                 if let Some(msgs) = msgs {
-                    let blocks = build_block_refs(msgs);
+                    let blocks = crate::message::build_block_refs(msgs);
                     let key = format!("{}:{}", msg_id, block_index);
                     if let Some(block_ref) = blocks
                         .iter()
@@ -2593,45 +2593,6 @@ fn pi_sessions_dir() -> std::path::PathBuf {
     base.join("sessions")
 }
 
-/// 从消息列表中构建可交互块引用列表
-fn build_block_refs(messages: &[ChatMessage]) -> Vec<BlockRef> {
-    let mut refs = Vec::new();
-    for (msg_idx, msg) in messages.iter().enumerate() {
-        if msg.role == crate::message::ChatRole::Assistant {
-            for (block_idx, block) in msg.content.iter().enumerate() {
-                match block {
-                    crate::message::ContentBlock::Thinking { .. } => {
-                        refs.push(BlockRef {
-                            msg_index: msg_idx,
-                            msg_id: msg.id.clone(),
-                            block_index: block_idx,
-                            kind: crate::message::BlockKind::Thinking,
-                        });
-                    }
-                    crate::message::ContentBlock::ToolCall { .. } => {
-                        refs.push(BlockRef {
-                            msg_index: msg_idx,
-                            msg_id: msg.id.clone(),
-                            block_index: block_idx,
-                            kind: crate::message::BlockKind::ToolCall,
-                        });
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-    refs
-}
-
-/// 块引用（扁平全局索引）
-struct BlockRef {
-    msg_index: usize,
-    msg_id: String,
-    block_index: usize,
-    kind: crate::message::BlockKind,
-}
-
 /// 使用 similar crate 计算统一 diff
 fn compute_diff_lines(old_text: &str, new_text: &str) -> Vec<crate::message::DiffLine> {
     use similar::{ChangeTag, TextDiff};
@@ -2990,7 +2951,7 @@ mod tests {
     #[test]
     fn test_build_block_refs_empty() {
         let msgs: Vec<ChatMessage> = vec![];
-        let refs = build_block_refs(&msgs);
+        let refs = crate::message::build_block_refs(&msgs);
         assert!(refs.is_empty(), "empty messages should give no block refs");
     }
 
@@ -3013,7 +2974,7 @@ mod tests {
             },
         ];
         let msgs = vec![msg];
-        let refs = build_block_refs(&msgs);
+        let refs = crate::message::build_block_refs(&msgs);
         assert_eq!(
             refs.len(),
             2,

@@ -114,7 +114,7 @@ impl MainView {
         msg_index: usize,
     ) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
-        let blocks = build_flat_blocks(&main_view.messages);
+        let blocks = crate::message::build_block_refs(&main_view.messages);
 
         match message.role {
             ChatRole::User => {
@@ -611,43 +611,6 @@ fn inset_content(area: Rect) -> Rect {
         area.height,
     )
 }
-
-/// 构建所有消息的平坦可交互块引用列表
-fn build_flat_blocks(messages: &[ChatMessage]) -> Vec<FlatBlockRef> {
-    let mut refs = Vec::new();
-    for (msg_idx, msg) in messages.iter().enumerate() {
-        if msg.role == ChatRole::Assistant {
-            for (block_idx, block) in msg.content.iter().enumerate() {
-                match block {
-                    crate::message::ContentBlock::Thinking { .. } => {
-                        refs.push(FlatBlockRef {
-                            msg_index: msg_idx,
-                            msg_id: msg.id.clone(),
-                            block_index: block_idx,
-                        });
-                    }
-                    crate::message::ContentBlock::ToolCall { .. } => {
-                        refs.push(FlatBlockRef {
-                            msg_index: msg_idx,
-                            msg_id: msg.id.clone(),
-                            block_index: block_idx,
-                        });
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-    refs
-}
-
-#[allow(dead_code)]
-struct FlatBlockRef {
-    msg_index: usize,
-    msg_id: String,
-    block_index: usize,
-}
-
 /// 格式化工具调用参数为简短摘要
 fn format_args_summary(args: &serde_json::Value) -> String {
     if let Some(obj) = args.as_object() {

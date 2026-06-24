@@ -585,7 +585,7 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                                     == crate::app::MainViewSubsection::Messages
                             {
                                 let blocks =
-                                    build_flat_blocks_for_tui(&app.tui.main_view.messages);
+                                    crate::message::build_block_refs(&app.tui.main_view.messages);
                                 let cur = app.tui.main_view.block_cursor;
                                 if cur > 0 && !blocks.is_empty() {
                                     app.tui.main_view.block_cursor = cur - 1;
@@ -613,7 +613,7 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                                     == crate::app::MainViewSubsection::Messages
                             {
                                 let blocks =
-                                    build_flat_blocks_for_tui(&app.tui.main_view.messages);
+                                    crate::message::build_block_refs(&app.tui.main_view.messages);
                                 let cur = app.tui.main_view.block_cursor;
                                 if cur + 1 < blocks.len() {
                                     app.tui.main_view.block_cursor = cur + 1;
@@ -823,7 +823,7 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                                 }
                                 crossterm::event::KeyCode::Enter => {
                                     // 块选中时进入详情视图
-                                    let blocks = build_flat_blocks_for_tui(
+                                    let blocks = crate::message::build_block_refs(
                                         &app.tui.main_view.messages,
                                     );
                                     if !blocks.is_empty()
@@ -871,7 +871,7 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                                 }
                                 crossterm::event::KeyCode::Char(' ') => {
                                     // Space 通过 Action 切换块的折叠/展开
-                                    let blocks = build_flat_blocks_for_tui(
+                                    let blocks = crate::message::build_block_refs(
                                         &app.tui.main_view.messages,
                                     );
                                     if app.tui.main_view.block_cursor < blocks.len() {
@@ -1284,36 +1284,6 @@ fn write_clipboard(text: &str) {
     }
 
     tracing::warn!("未找到可用的剪贴板工具 (wl-copy/xclip/xsel/pbcopy/clip)");
-}
-
-/// 构建设置消息的平坦可交互块引用列表（用于 Alt+↑/↓ 导航）
-fn build_flat_blocks_for_tui(messages: &[crate::message::ChatMessage]) -> Vec<FlatBlockRef> {
-    let mut refs = Vec::new();
-    for (msg_idx, msg) in messages.iter().enumerate() {
-        if msg.role == crate::message::ChatRole::Assistant {
-            for (block_idx, block) in msg.content.iter().enumerate() {
-                match block {
-                    crate::message::ContentBlock::Thinking { .. }
-                    | crate::message::ContentBlock::ToolCall { .. } => {
-                        refs.push(FlatBlockRef {
-                            msg_index: msg_idx,
-                            msg_id: msg.id.clone(),
-                            block_index: block_idx,
-                        });
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-    refs
-}
-
-/// 块引用（用于块导航的扁平全局索引）
-struct FlatBlockRef {
-    msg_index: usize,
-    msg_id: String,
-    block_index: usize,
 }
 
 /// 检查 Ctrl+C（用于错误状态的简单轮询）

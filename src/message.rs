@@ -318,6 +318,47 @@ fn now_millis() -> u64 {
         .unwrap_or(0)
 }
 
+/// 块引用（跨消息的可交互块扁平全局索引）
+#[derive(Debug, Clone)]
+pub struct BlockRef {
+    /// 原消息在 Vec 中的索引
+    pub msg_index: usize,
+    /// 消息 UUID
+    pub msg_id: String,
+    /// 消息内 content 数组的索引
+    pub block_index: usize,
+    /// 块类型
+    pub kind: BlockKind,
+}
+
+/// 从消息列表中构建所有可交互块的扁平引用列表
+///
+/// 遍历所有 Assistant 消息的 content 数组，收集 Thinking 和 ToolCall 块。
+/// Text 和 Image 块不可交互，被跳过。
+pub fn build_block_refs(messages: &[ChatMessage]) -> Vec<BlockRef> {
+    let mut refs = Vec::new();
+    for (msg_idx, msg) in messages.iter().enumerate() {
+        if msg.role == ChatRole::Assistant {
+            for (block_idx, block) in msg.content.iter().enumerate() {
+                let kind = match block {
+                    ContentBlock::Thinking { .. } => Some(BlockKind::Thinking),
+                    ContentBlock::ToolCall { .. } => Some(BlockKind::ToolCall),
+                    _ => None,
+                };
+                if let Some(kind) = kind {
+                    refs.push(BlockRef {
+                        msg_index: msg_idx,
+                        msg_id: msg.id.clone(),
+                        block_index: block_idx,
+                        kind,
+                    });
+                }
+            }
+        }
+    }
+    refs
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
