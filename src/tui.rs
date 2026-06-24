@@ -28,6 +28,7 @@ fn translate_pi_events(event: PiEvent, agent_id: &str) -> Vec<Action> {
             // 1. delta 事件（打字机效果）
             match assistant_event.event_type {
                 AssistantEventType::TextDelta => {
+                    tracing::debug!("MSG: text_delta");
                     actions.push(Action::MessageAppend {
                         agent_id: agent_id.into(),
                         text: assistant_event.delta.clone().unwrap_or_default(),
@@ -50,10 +51,13 @@ fn translate_pi_events(event: PiEvent, agent_id: &str) -> Vec<Action> {
                         agent_id: agent_id.into(),
                     });
                 }
-                _ => {}
+                ref other => {
+                    tracing::debug!("MSG: unhandled delta type {:?}", other);
+                }
             }
             // 2. ContentUpdate（块数组快照）
             if let Some(ref data) = message {
+                tracing::debug!("MSG: content_update {} blocks", data.content.len());
                 actions.push(Action::ContentUpdate {
                     agent_id: agent_id.into(),
                     content: data.content.clone(),
@@ -124,7 +128,10 @@ fn translate_single_action(event: PiEvent, agent_id: &str) -> Option<Action> {
             })
         }
 
-        _ => None,
+        ref other => {
+            tracing::debug!("EVENT: unhandled {:?}", std::mem::discriminant(other));
+            None
+        }
     }
 }
 
@@ -359,6 +366,7 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
     app.populate_mcps();
 
     let agent_id = app.active_agent.clone().unwrap_or_default();
+    tracing::info!("TUI 主循环开始，active_agent={:?}", agent_id);
     let mut input_buffer = String::new();
 
     // 焦点状态由 App 通过 focus_panel 管理
@@ -380,7 +388,11 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
             _ = ticker.tick() => {
                 // 处理 pi 事件（支持多 Action 返回，如 ContentUpdate + delta）
                 while let Ok(event) = client.event_rx.try_recv() {
-                    for action in translate_pi_events(event, &agent_id) {
+                    tracing::debug!("EVENT: {:?}", std::mem::discriminant(&event));
+                    let actions = translate_pi_events(event, &agent_id);
+                    tracing::debug!("  -> {} actions", actions.len());
+                    for (i, action) in actions.into_iter().enumerate() {
+                        tracing::debug!("  ACTION[{}]: {:?}", i, std::mem::discriminant(&action));
                         if let Err(e) = app.handle_action(action).await {
                             tracing::error!("handle_action error: {}", e);
                         }

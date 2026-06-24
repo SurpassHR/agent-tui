@@ -1069,6 +1069,11 @@ impl App {
             }
 
             Action::ContentUpdate { agent_id, content } => {
+                tracing::debug!(
+                    "HANDLE ContentUpdate agent={} blocks={}",
+                    agent_id,
+                    content.len()
+                );
                 // 更新最后一条 Assistant 消息的 content 数组；
                 // 若不存在则创建（处理首帧 message_update 不含 delta 的情况）
                 let msgs = self.messages.entry(agent_id.clone()).or_default();
@@ -1476,6 +1481,13 @@ impl App {
     fn sync_messages_to_main_view(&mut self, agent_id: &str) {
         if let Some(msgs) = self.messages.get(agent_id) {
             self.tui.main_view.messages = msgs.clone();
+            tracing::debug!(
+                "SYNC agent={} msgs={} loaded",
+                agent_id,
+                self.tui.main_view.messages.len()
+            );
+        } else {
+            tracing::debug!("SYNC agent={} NOT FOUND in messages map", agent_id);
         }
     }
 
