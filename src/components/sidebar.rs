@@ -230,11 +230,11 @@ impl Sidebar {
 
         // ── PROVIDER 区块 ──
         let status = if self.router_running && !self.providers.is_empty() {
-            format!(" ◈ :{}", self.port)
+            " ◈ 已就绪".to_string()
         } else if self.router_running {
-            " ◇ no providers".to_string()
+            " ◇ 无配置".to_string()
         } else {
-            " ◇ offline".to_string()
+            " ◇ 离线".to_string()
         };
         let is_on_providers = focused_on_providers;
         let p_title = if is_on_providers {
@@ -282,7 +282,7 @@ impl Sidebar {
                 let (fg, bg) = if is_provider_selected {
                     (theme.selection_fg, theme.highlight_bg)
                 } else if is_active && p.enabled {
-                    (theme.accent, theme.bg)
+                    (theme.success, theme.bg)
                 } else {
                     (theme.text_dim, theme.bg)
                 };
