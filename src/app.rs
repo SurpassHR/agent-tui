@@ -1530,6 +1530,8 @@ impl App {
                     self.sync_messages_to_main_view(&session_id);
                     self.sync_components();
                 }
+                // 保存 UI 状态到 state.json
+                crate::persistence::save(&self.build_persist_state());
             }
 
             Action::SidebarMove(delta) => {
@@ -2733,6 +2735,80 @@ impl App {
 }
 
 impl App {
+    /// 从当前 TUI 状态构建持久化数据结构
+    pub fn build_persist_state(&self) -> crate::persistence::UiPersistState {
+        crate::persistence::UiPersistState {
+            active_session_id: self.active_agent.clone(),
+            expanded_workspaces: self
+                .tui
+                .workspaces
+                .iter()
+                .filter(|ws| ws.expanded)
+                .map(|ws| ws.name.clone())
+                .collect(),
+        }
+    }
+
+    /// 从 state.json 恢复工作区展开状态和活跃会话
+    ///
+    /// 应在 `populate_workspaces()` 之后调用。
+    pub fn restore_persisted_state(&mut self) {
+        let state = crate::persistence::load();
+
+        // 恢复工作区展开状态
+        for ws in &mut self.tui.workspaces {
+            ws.expanded = state.expanded_workspaces.contains(&ws.name);
+        }
+
+        // 恢复活跃会话
+        if let Some(ref session_id) = state.active_session_id {
+            // 验证会话是否仍然存在
+            let session_exists = self
+                .tui
+                .workspaces
+                .iter()
+                .any(|ws| ws.sessions.iter().any(|s| s.id == *session_id));
+            if session_exists {
+                tracing::info!("恢复上次活跃会话: {}", session_id);
+                self.tui.active_session = session_id.clone();
+                // 查找 file_path 并加载消息
+                if let Some(path) = self.tui.workspaces.iter().find_map(|ws| {
+                    ws.sessions
+                        .iter()
+                        .find(|s| s.id == *session_id)
+                        .and_then(|s| s.file_path.clone())
+                }) {
+                    match load_session_messages(&path) {
+                        Ok(messages) => {
+                            self.messages.insert(session_id.clone(), messages);
+                            self.active_agent = Some(session_id.clone());
+                            self.session.id = session_id.clone();
+                            self.session.file_path = Some(path);
+                            if let Some(ws) = self
+                                .tui
+                                .workspaces
+                                .iter()
+                                .find(|ws| ws.sessions.iter().any(|s| s.id == *session_id))
+                            {
+                                if let Some(sess) = ws.sessions.iter().find(|s| s.id == *session_id)
+                                {
+                                    self.session.name = Some(sess.name.clone());
+                                }
+                            }
+                            self.sync_messages_to_main_view(session_id);
+                            self.sync_components();
+                        }
+                        Err(e) => {
+                            tracing::warn!("恢复会话消息失败: {} — {}", path, e);
+                        }
+                    }
+                }
+            } else {
+                tracing::info!("上次活跃会话已不存在，不恢复");
+            }
+        }
+    }
+
     /// 从 session 目录扫描并填充工作区数据
     pub fn populate_workspaces(&mut self) {
         let sessions_dir = pi_sessions_dir();
