@@ -599,17 +599,33 @@ impl TuiState {
                 true
             }
             KeyCode::Enter => {
-                let filtered = self.filtered_models();
-                if let Some(m) = filtered.get(self.model_cursor) {
-                    let model_id = m.id.clone();
-                    // 找到该模型所属的 Provider 并设为活跃
-                    self.active_provider_idx = self
-                        .providers
-                        .iter()
-                        .enumerate()
-                        .find(|(_, p)| p.models.iter().any(|pm| pm.id == model_id))
-                        .map(|(i, _)| i);
-                    self.current_model = model_id;
+                let model_id = {
+                    let filtered = self.filtered_models();
+                    filtered.get(self.model_cursor).map(|m| m.id.clone())
+                };
+                if let Some(mid) = model_id {
+                    // MODEL 区显示的模型均来自当前活跃 Provider，直接用其索引
+                    self.active_provider_idx = self.active_provider_index();
+                    self.current_model = mid;
+                    self.model_just_switched = true;
+                }
+                true
+            }
+            KeyCode::Char(' ') => {
+                // Space → toggle：切换模型选中/取消
+                let model_id = {
+                    let filtered = self.filtered_models();
+                    filtered.get(self.model_cursor).map(|m| m.id.clone())
+                };
+                if let Some(ref mid) = model_id {
+                    if self.current_model == *mid {
+                        // 当前选中 → 取消（保留 active_provider_idx，MODEL 区仍显示当前 Provider 模型）
+                        self.current_model.clear();
+                    } else {
+                        // 未选中 → 选中（MODEL 区模型来自当前活跃 Provider）
+                        self.active_provider_idx = self.active_provider_index();
+                        self.current_model = mid.clone();
+                    }
                     self.model_just_switched = true;
                 }
                 true
@@ -651,19 +667,37 @@ impl TuiState {
     /// 获取当前活跃 provider（用于 MODEL 子区显示模型列表）
     /// 优先按 active_provider_idx 查找，其次按 current_model 匹配，只考虑启用的 provider
     pub fn active_provider_for_models(&self) -> Option<&crate::provider::ProviderInfo> {
+        self.active_provider_index()
+            .and_then(|idx| self.providers.get(idx))
+    }
+
+    /// 获取当前活跃 provider 的索引
+    /// 优先按 active_provider_idx → current_model 匹配 → 第一个启用的 Provider
+    pub fn active_provider_index(&self) -> Option<usize> {
         // 优先使用按索引选中的 Provider
         if let Some(idx) = self.active_provider_idx {
             if let Some(p) = self.providers.get(idx) {
                 if p.enabled {
-                    return Some(p);
+                    return Some(idx);
                 }
             }
         }
         // 回退：按 current_model 匹配
+        if let Some((i, _)) = self
+            .providers
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.enabled)
+            .find(|(_, p)| p.models.iter().any(|m| m.id == self.current_model))
+        {
+            return Some(i);
+        }
+        // 最终回退：第一个启用的 Provider
         self.providers
             .iter()
-            .filter(|p| p.enabled)
-            .find(|p| p.models.iter().any(|m| m.id == self.current_model))
+            .enumerate()
+            .find(|(_, p)| p.enabled)
+            .map(|(i, _)| i)
     }
 
     fn handle_provider_editor_key(&mut self, key: crossterm::event::KeyCode) -> bool {
@@ -2876,6 +2910,11 @@ mod tests {
             state.current_model, "deepseek-chat",
             "Enter 应激活第一个 model"
         );
+        assert_eq!(
+            state.active_provider_idx,
+            Some(0),
+            "Enter 应设置 active_provider_idx"
+        );
         assert_eq!(state.provider_popup, None, "激活后 popup 应关闭");
     }
 
@@ -2952,6 +2991,7 @@ mod tests {
     fn test_model_nav_down_up_enter() {
         let mut state = TuiState::new();
         state.current_model = "m1".to_string(); // 预设当前模型
+        state.active_provider_idx = Some(0); // 预设活跃 Provider
         state.providers = vec![crate::provider::ProviderInfo {
             id: "ds".into(),
             name: "DS".into(),
@@ -2989,6 +3029,661 @@ mod tests {
         // Enter 选中 model
         state.handle_model_key(crossterm::event::KeyCode::Enter);
         assert_eq!(state.current_model, "m2", "Enter 应切换到选中的 model");
+        assert_eq!(
+            state.active_provider_idx,
+            Some(0),
+            "Enter 应保持当前活跃 Provider 不变"
+        );
+    }
+
+    #[test]
+    fn test_model_space_toggle_activate() {
+        // Space 选中当前未选中的模型
+        let mut state = TuiState::new();
+        state.current_model = "m1".into();
+        state.active_provider_idx = Some(0);
+        state.providers = vec![crate::provider::ProviderInfo {
+            id: "ds".into(),
+            name: "DS".into(),
+            enabled: true,
+            bridge: false,
+            base_url: "".into(),
+            api_key: "".into(),
+            models: vec![
+                crate::provider::ModelInfo {
+                    id: "m1".into(),
+                    name: "M1".into(),
+                    context_window: 1000,
+                    reasoning: false,
+                    tier: "T1".into(),
+                    enabled: true,
+                },
+                crate::provider::ModelInfo {
+                    id: "m2".into(),
+                    name: "M2".into(),
+                    context_window: 2000,
+                    reasoning: true,
+                    tier: "T2".into(),
+                    enabled: true,
+                },
+            ],
+        }];
+        state.focus_panel = FocusPanel::Sidebar;
+        state.sidebar_subsection = SidebarSubsection::Model;
+        state.model_cursor = 1; // 光标在 m2 (未选中)
+
+        state.handle_model_key(crossterm::event::KeyCode::Char(' '));
+        assert_eq!(state.current_model, "m2", "Space 应切换到 m2");
+        assert_eq!(state.active_provider_idx, Some(0), "不应切换 Provider");
+        assert!(state.model_just_switched);
+    }
+
+    #[test]
+    fn test_model_space_toggle_deactivate() {
+        // Space 取消当前已选中的模型
+        let mut state = TuiState::new();
+        state.current_model = "m1".into();
+        state.active_provider_idx = Some(0);
+        state.providers = vec![crate::provider::ProviderInfo {
+            id: "ds".into(),
+            name: "DS".into(),
+            enabled: true,
+            bridge: false,
+            base_url: "".into(),
+            api_key: "".into(),
+            models: vec![crate::provider::ModelInfo {
+                id: "m1".into(),
+                name: "M1".into(),
+                context_window: 1000,
+                reasoning: false,
+                tier: "T1".into(),
+                enabled: true,
+            }],
+        }];
+        state.focus_panel = FocusPanel::Sidebar;
+        state.sidebar_subsection = SidebarSubsection::Model;
+        state.model_cursor = 0; // 光标在 m1 (已选中)
+
+        state.handle_model_key(crossterm::event::KeyCode::Char(' '));
+        assert_eq!(state.current_model, "", "Space 应取消选中");
+        assert_eq!(
+            state.active_provider_idx,
+            Some(0),
+            "取消选中应保留 active_provider_idx（MODEL 区仍显示原 Provider 模型）"
+        );
+    }
+
+    #[test]
+    fn test_model_space_does_not_switch_provider_on_same_model_id() {
+        // 两个 Provider 有同名模型，在 Provider 1 的 MODEL 区 Space 切换不应跳到 Provider 0
+        let mut state = TuiState::new();
+        state.providers = vec![
+            crate::provider::ProviderInfo {
+                id: "elysiver".into(),
+                name: "Elysiver".into(),
+                enabled: true,
+                bridge: false,
+                base_url: "".into(),
+                api_key: "".into(),
+                models: vec![crate::provider::ModelInfo {
+                    id: "shared-model".into(),
+                    name: "Shared".into(),
+                    context_window: 1000,
+                    reasoning: false,
+                    tier: "T2".into(),
+                    enabled: true,
+                }],
+            },
+            crate::provider::ProviderInfo {
+                id: "deepseek".into(),
+                name: "DeepSeek".into(),
+                enabled: true,
+                bridge: false,
+                base_url: "".into(),
+                api_key: "".into(),
+                models: vec![crate::provider::ModelInfo {
+                    id: "shared-model".into(),
+                    name: "Shared".into(),
+                    context_window: 2000,
+                    reasoning: true,
+                    tier: "T2".into(),
+                    enabled: true,
+                }],
+            },
+        ];
+        state.focus_panel = FocusPanel::Sidebar;
+        state.sidebar_subsection = SidebarSubsection::Model;
+        state.model_cursor = 0;
+        // 当前在 deepseek Provider (索引 1) 的 MODEL 区
+        state.active_provider_idx = Some(1);
+        state.current_model = "shared-model".into();
+
+        // Space 取消选中
+        state.handle_model_key(crossterm::event::KeyCode::Char(' '));
+        assert_eq!(state.current_model, "", "Space 应取消选中");
+
+        // Space 重新选中 — 应保持在 deepseek (索引 1)
+        state.handle_model_key(crossterm::event::KeyCode::Char(' '));
+        assert_eq!(state.current_model, "shared-model");
+        assert_eq!(
+            state.active_provider_idx,
+            Some(1),
+            "同名模型不应导致 Provider 跳到第一个 (elysiver)"
+        );
+    }
+
+    #[test]
+    fn test_model_enter_does_not_switch_provider_on_same_model_id() {
+        // Enter 在 MODEL 区不应切换 Provider
+        let mut state = TuiState::new();
+        state.providers = vec![
+            crate::provider::ProviderInfo {
+                id: "a".into(),
+                name: "A".into(),
+                enabled: true,
+                bridge: false,
+                base_url: "".into(),
+                api_key: "".into(),
+                models: vec![crate::provider::ModelInfo {
+                    id: "dup".into(),
+                    name: "Dup".into(),
+                    context_window: 1000,
+                    reasoning: false,
+                    tier: "T1".into(),
+                    enabled: true,
+                }],
+            },
+            crate::provider::ProviderInfo {
+                id: "b".into(),
+                name: "B".into(),
+                enabled: true,
+                bridge: false,
+                base_url: "".into(),
+                api_key: "".into(),
+                models: vec![crate::provider::ModelInfo {
+                    id: "dup".into(),
+                    name: "Dup".into(),
+                    context_window: 2000,
+                    reasoning: true,
+                    tier: "T2".into(),
+                    enabled: true,
+                }],
+            },
+        ];
+        state.focus_panel = FocusPanel::Sidebar;
+        state.sidebar_subsection = SidebarSubsection::Model;
+        state.model_cursor = 0;
+        state.active_provider_idx = Some(1); // 在 Provider B
+        state.current_model = "other".into();
+
+        state.handle_model_key(crossterm::event::KeyCode::Enter);
+        assert_eq!(state.current_model, "dup");
+        assert_eq!(
+            state.active_provider_idx,
+            Some(1),
+            "Enter 不应把 Provider 从 B 切到 A"
+        );
+    }
+
+    #[test]
+    fn test_provider_space_sets_active_provider_idx() {
+        let mut state = TuiState::new();
+        state.providers = vec![crate::provider::ProviderInfo {
+            id: "ds".into(),
+            name: "DS".into(),
+            enabled: true,
+            bridge: false,
+            base_url: "".into(),
+            api_key: "".into(),
+            models: vec![crate::provider::ModelInfo {
+                id: "m1".into(),
+                name: "M1".into(),
+                context_window: 1000,
+                reasoning: false,
+                tier: "T1".into(),
+                enabled: true,
+            }],
+        }];
+        state.focus_panel = FocusPanel::Sidebar;
+        state.sidebar_subsection = SidebarSubsection::Provider;
+        state.provider_cursor = 0;
+
+        state.handle_provider_key(crossterm::event::KeyCode::Char(' '));
+        assert_eq!(state.active_provider_idx, Some(0));
+        assert_eq!(state.current_model, "m1");
+    }
+
+    #[test]
+    fn test_provider_space_toggle_deactivates() {
+        let mut state = TuiState::new();
+        state.providers = vec![crate::provider::ProviderInfo {
+            id: "ds".into(),
+            name: "DS".into(),
+            enabled: true,
+            bridge: false,
+            base_url: "".into(),
+            api_key: "".into(),
+            models: vec![crate::provider::ModelInfo {
+                id: "m1".into(),
+                name: "M1".into(),
+                context_window: 1000,
+                reasoning: false,
+                tier: "T1".into(),
+                enabled: true,
+            }],
+        }];
+        state.focus_panel = FocusPanel::Sidebar;
+        state.sidebar_subsection = SidebarSubsection::Provider;
+        state.provider_cursor = 0;
+        state.active_provider_idx = Some(0);
+        state.current_model = "m1".into();
+
+        state.handle_provider_key(crossterm::event::KeyCode::Char(' '));
+        assert_eq!(state.active_provider_idx, None);
+        assert_eq!(state.current_model, "");
+    }
+
+    #[test]
+    fn test_provider_space_does_not_cross_affect() {
+        // 两个 Provider，Space 切换 A 不应影响 B 的活跃状态判断
+        let mut state = TuiState::new();
+        state.providers = vec![
+            crate::provider::ProviderInfo {
+                id: "a".into(),
+                name: "A".into(),
+                enabled: true,
+                bridge: false,
+                base_url: "".into(),
+                api_key: "".into(),
+                models: vec![crate::provider::ModelInfo {
+                    id: "ma".into(),
+                    name: "MA".into(),
+                    context_window: 1000,
+                    reasoning: false,
+                    tier: "T1".into(),
+                    enabled: true,
+                }],
+            },
+            crate::provider::ProviderInfo {
+                id: "b".into(),
+                name: "B".into(),
+                enabled: true,
+                bridge: false,
+                base_url: "".into(),
+                api_key: "".into(),
+                models: vec![crate::provider::ModelInfo {
+                    id: "mb".into(),
+                    name: "MB".into(),
+                    context_window: 2000,
+                    reasoning: true,
+                    tier: "T2".into(),
+                    enabled: true,
+                }],
+            },
+        ];
+        state.focus_panel = FocusPanel::Sidebar;
+        state.sidebar_subsection = SidebarSubsection::Provider;
+
+        // Space 切换 Provider A
+        state.provider_cursor = 0;
+        state.handle_provider_key(crossterm::event::KeyCode::Char(' '));
+        assert_eq!(state.active_provider_idx, Some(0));
+        assert_eq!(state.current_model, "ma");
+
+        // 切换到 Provider B
+        state.provider_cursor = 1;
+        state.handle_provider_key(crossterm::event::KeyCode::Char(' '));
+        assert_eq!(
+            state.active_provider_idx,
+            Some(1),
+            "Space 应激活 Provider B，而不是保持 A"
+        );
+        assert_eq!(state.current_model, "mb");
+
+        // Provider A 已不再是活跃
+        assert_ne!(state.active_provider_idx, Some(0));
+    }
+
+    #[test]
+    fn test_provider_d_key_clears_active_idx_when_disabling_active() {
+        let mut state = TuiState::new();
+        state.providers = vec![crate::provider::ProviderInfo {
+            id: "ds".into(),
+            name: "DS".into(),
+            enabled: true,
+            bridge: false,
+            base_url: "".into(),
+            api_key: "".into(),
+            models: vec![crate::provider::ModelInfo {
+                id: "m1".into(),
+                name: "M1".into(),
+                context_window: 1000,
+                reasoning: false,
+                tier: "T1".into(),
+                enabled: true,
+            }],
+        }];
+        state.focus_panel = FocusPanel::Sidebar;
+        state.sidebar_subsection = SidebarSubsection::Provider;
+        state.provider_cursor = 0;
+        state.active_provider_idx = Some(0);
+        state.current_model = "m1".into();
+
+        // 禁用活跃 Provider
+        state.handle_provider_key(crossterm::event::KeyCode::Char('d'));
+        assert!(!state.providers[0].enabled, "Provider 应被禁用");
+        assert_eq!(
+            state.active_provider_idx, None,
+            "禁用活跃 Provider 应清除 active_provider_idx"
+        );
+        assert_eq!(
+            state.current_model, "",
+            "禁用活跃 Provider 应清除 current_model"
+        );
+    }
+
+    #[test]
+    fn test_provider_d_key_keeps_active_idx_when_disabling_inactive() {
+        // 禁用非活跃 Provider 不应清除 active_provider_idx
+        let mut state = TuiState::new();
+        state.providers = vec![
+            crate::provider::ProviderInfo {
+                id: "a".into(),
+                name: "A".into(),
+                enabled: true,
+                bridge: false,
+                base_url: "".into(),
+                api_key: "".into(),
+                models: vec![crate::provider::ModelInfo {
+                    id: "ma".into(),
+                    name: "MA".into(),
+                    context_window: 1000,
+                    reasoning: false,
+                    tier: "T1".into(),
+                    enabled: true,
+                }],
+            },
+            crate::provider::ProviderInfo {
+                id: "b".into(),
+                name: "B".into(),
+                enabled: true,
+                bridge: false,
+                base_url: "".into(),
+                api_key: "".into(),
+                models: vec![crate::provider::ModelInfo {
+                    id: "mb".into(),
+                    name: "MB".into(),
+                    context_window: 2000,
+                    reasoning: true,
+                    tier: "T2".into(),
+                    enabled: true,
+                }],
+            },
+        ];
+        state.focus_panel = FocusPanel::Sidebar;
+        state.sidebar_subsection = SidebarSubsection::Provider;
+        state.active_provider_idx = Some(0); // A 是活跃的
+        state.current_model = "ma".into();
+
+        // 禁用非活跃的 Provider B
+        state.provider_cursor = 1;
+        state.handle_provider_key(crossterm::event::KeyCode::Char('d'));
+        assert!(!state.providers[1].enabled, "Provider B 应被禁用");
+        assert_eq!(
+            state.active_provider_idx,
+            Some(0),
+            "禁用非活跃 Provider 不应清除 active_provider_idx"
+        );
+        assert_eq!(state.current_model, "ma", "current_model 不应被清除");
+    }
+
+    #[test]
+    fn test_active_provider_for_models_prefers_idx() {
+        // active_provider_for_models 应优先使用 active_provider_idx
+        let mut state = TuiState::new();
+        state.current_model = "shared".into();
+        state.providers = vec![
+            crate::provider::ProviderInfo {
+                id: "first".into(),
+                name: "First".into(),
+                enabled: true,
+                bridge: false,
+                base_url: "".into(),
+                api_key: "".into(),
+                models: vec![crate::provider::ModelInfo {
+                    id: "shared".into(),
+                    name: "Shared".into(),
+                    context_window: 1000,
+                    reasoning: false,
+                    tier: "T1".into(),
+                    enabled: true,
+                }],
+            },
+            crate::provider::ProviderInfo {
+                id: "second".into(),
+                name: "Second".into(),
+                enabled: true,
+                bridge: false,
+                base_url: "".into(),
+                api_key: "".into(),
+                models: vec![crate::provider::ModelInfo {
+                    id: "shared".into(),
+                    name: "Shared".into(),
+                    context_window: 2000,
+                    reasoning: true,
+                    tier: "T2".into(),
+                    enabled: true,
+                }],
+            },
+        ];
+
+        state.active_provider_idx = Some(1); // 指定 second
+        let ap = state.active_provider_for_models().unwrap();
+        assert_eq!(ap.id, "second", "应按 idx 返回 second，不是 first");
+    }
+
+    #[test]
+    fn test_active_provider_for_models_fallback_to_current_model() {
+        // 无 active_provider_idx 时回退到 current_model 匹配
+        let mut state = TuiState::new();
+        state.current_model = "model-b".into();
+        state.providers = vec![
+            crate::provider::ProviderInfo {
+                id: "a".into(),
+                name: "A".into(),
+                enabled: true,
+                bridge: false,
+                base_url: "".into(),
+                api_key: "".into(),
+                models: vec![crate::provider::ModelInfo {
+                    id: "model-a".into(),
+                    name: "MA".into(),
+                    context_window: 1000,
+                    reasoning: false,
+                    tier: "T1".into(),
+                    enabled: true,
+                }],
+            },
+            crate::provider::ProviderInfo {
+                id: "b".into(),
+                name: "B".into(),
+                enabled: true,
+                bridge: false,
+                base_url: "".into(),
+                api_key: "".into(),
+                models: vec![crate::provider::ModelInfo {
+                    id: "model-b".into(),
+                    name: "MB".into(),
+                    context_window: 2000,
+                    reasoning: true,
+                    tier: "T2".into(),
+                    enabled: true,
+                }],
+            },
+        ];
+
+        state.active_provider_idx = None;
+        let ap = state.active_provider_for_models().unwrap();
+        assert_eq!(ap.id, "b", "回退应按 current_model 匹配找到 Provider B");
+    }
+
+    #[test]
+    fn test_active_provider_index_prefers_idx() {
+        let mut state = TuiState::new();
+        state.current_model = "shared".into();
+        state.providers = vec![
+            crate::provider::ProviderInfo {
+                id: "first".into(),
+                name: "First".into(),
+                enabled: true,
+                bridge: false,
+                base_url: "".into(),
+                api_key: "".into(),
+                models: vec![crate::provider::ModelInfo {
+                    id: "shared".into(),
+                    name: "Shared".into(),
+                    context_window: 1000,
+                    reasoning: false,
+                    tier: "T1".into(),
+                    enabled: true,
+                }],
+            },
+            crate::provider::ProviderInfo {
+                id: "second".into(),
+                name: "Second".into(),
+                enabled: true,
+                bridge: false,
+                base_url: "".into(),
+                api_key: "".into(),
+                models: vec![crate::provider::ModelInfo {
+                    id: "shared".into(),
+                    name: "Shared".into(),
+                    context_window: 2000,
+                    reasoning: true,
+                    tier: "T2".into(),
+                    enabled: true,
+                }],
+            },
+        ];
+
+        state.active_provider_idx = Some(1);
+        let idx = state.active_provider_index().unwrap();
+        assert_eq!(idx, 1, "应返回 idx=1，不按 current_model 匹配到 0");
+    }
+
+    #[test]
+    fn test_active_provider_index_fallback() {
+        let mut state = TuiState::new();
+        state.current_model = "m2".into();
+        state.providers = vec![crate::provider::ProviderInfo {
+            id: "p".into(),
+            name: "P".into(),
+            enabled: true,
+            bridge: false,
+            base_url: "".into(),
+            api_key: "".into(),
+            models: vec![
+                crate::provider::ModelInfo {
+                    id: "m1".into(),
+                    name: "M1".into(),
+                    context_window: 1000,
+                    reasoning: false,
+                    tier: "T1".into(),
+                    enabled: true,
+                },
+                crate::provider::ModelInfo {
+                    id: "m2".into(),
+                    name: "M2".into(),
+                    context_window: 2000,
+                    reasoning: true,
+                    tier: "T2".into(),
+                    enabled: true,
+                },
+            ],
+        }];
+
+        state.active_provider_idx = None;
+        let idx = state.active_provider_index().unwrap();
+        assert_eq!(idx, 0, "回退应按 current_model='m2' 匹配到索引 0");
+    }
+
+    #[test]
+    fn test_filtered_models_uses_active_provider() {
+        // filtered_models 应从 active_provider_for_models 返回的 Provider 取模型
+        let mut state = TuiState::new();
+        state.current_model = "m1".into();
+        state.providers = vec![
+            crate::provider::ProviderInfo {
+                id: "p0".into(),
+                name: "P0".into(),
+                enabled: true,
+                bridge: false,
+                base_url: "".into(),
+                api_key: "".into(),
+                models: vec![crate::provider::ModelInfo {
+                    id: "m1".into(),
+                    name: "M1".into(),
+                    context_window: 1000,
+                    reasoning: false,
+                    tier: "T1".into(),
+                    enabled: true,
+                }],
+            },
+            crate::provider::ProviderInfo {
+                id: "p1".into(),
+                name: "P1".into(),
+                enabled: true,
+                bridge: false,
+                base_url: "".into(),
+                api_key: "".into(),
+                models: vec![crate::provider::ModelInfo {
+                    id: "m2".into(),
+                    name: "M2".into(),
+                    context_window: 2000,
+                    reasoning: true,
+                    tier: "T2".into(),
+                    enabled: true,
+                }],
+            },
+        ];
+        state.active_provider_idx = Some(1); // 指定 p1
+
+        let models = state.filtered_models();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "m2", "应从 p1 取模型，不是 p0");
+    }
+
+    #[test]
+    fn test_handle_provider_key_space_on_disabled_provider_noop_via_guard() {
+        // guard 条件已防止禁用/空 provider 触发 Space，此测试验证 guard 生效
+        // disabled provider 的 cursor 仍可定位，但 Space 的 guard 检查列表非空+游标在范围内
+        let mut state = TuiState::new();
+        state.providers = vec![crate::provider::ProviderInfo {
+            id: "ds".into(),
+            name: "DS".into(),
+            enabled: false,
+            bridge: false,
+            base_url: "".into(),
+            api_key: "".into(),
+            models: vec![],
+        }];
+        state.focus_panel = FocusPanel::Sidebar;
+        state.sidebar_subsection = SidebarSubsection::Provider;
+        state.provider_cursor = 0;
+        state.current_model = "x".into();
+
+        // Space guard: provider_cursor < providers.len() → true
+        // 但 provider has no models, so "else if" branch doesn't fire
+        // current_model should remain unchanged
+        state.handle_provider_key(crossterm::event::KeyCode::Char(' '));
+        assert_eq!(
+            state.current_model, "x",
+            "无模型的 provider 不应切换 current_model"
+        );
+        assert_eq!(
+            state.active_provider_idx, None,
+            "无模型的 provider 不应设为活跃"
+        );
     }
 
     #[test]

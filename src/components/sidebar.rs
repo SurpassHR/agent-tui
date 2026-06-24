@@ -317,11 +317,18 @@ impl Sidebar {
         }
 
         // ── MODEL 区块（独立跟随 active provider，支持搜索过滤 + 滚动） ──
+        // 优先用 active_provider_idx 按索引定位，避免同名模型 ID 跨 Provider 误匹配
         let active_provider = self
-            .providers
-            .iter()
+            .active_provider_idx
+            .and_then(|idx| self.providers.get(idx))
             .filter(|p| p.enabled)
-            .find(|p| p.models.iter().any(|m| m.id == self.current_model));
+            .or_else(|| {
+                self.providers
+                    .iter()
+                    .filter(|p| p.enabled)
+                    .find(|p| p.models.iter().any(|m| m.id == self.current_model))
+            })
+            .or_else(|| self.providers.iter().find(|p| p.enabled));
 
         if let Some(ap) = active_provider {
             lines.push(Line::from(vec![
