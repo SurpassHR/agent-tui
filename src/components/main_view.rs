@@ -34,6 +34,14 @@ pub struct MainView {
     pub scroll_mode: ScrollMode,
     /// 选区状态
     pub selection: SelectionState,
+    /// 块光标（可交互块的扁平全局索引）
+    pub block_cursor: usize,
+    /// 块展开状态 key = "{msg_id}:{block_index}"
+    pub block_states: std::collections::HashMap<String, crate::message::BlockExpanded>,
+    /// 详情/进入视图
+    pub entered_view: Option<crate::message::EnteredView>,
+    /// 输入补全 popup
+    pub completion_popup: Option<crate::message::CompletionPopup>,
 }
 
 impl MainView {

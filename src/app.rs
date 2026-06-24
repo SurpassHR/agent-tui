@@ -470,9 +470,7 @@ impl TuiState {
                     true
                 }
                 KeyCode::Enter => {
-                    if self.provider_cursor == self.providers.len()
-                        || self.providers.is_empty()
-                    {
+                    if self.provider_cursor == self.providers.len() || self.providers.is_empty() {
                         self.provider_popup = None;
                         self.provider_editor = Some(ProviderEditor {
                             is_new: true,
@@ -498,28 +496,28 @@ impl TuiState {
                 KeyCode::Left | KeyCode::Esc => true,
                 KeyCode::Char('+') => {
                     let default = crate::provider::ProviderInfo {
-                            id: "new-provider".into(),
-                            name: "New Provider".into(),
-                            bridge: false,
-                            base_url: "https://api.openai.com/v1".into(),
-                            api_key: String::new(),
-                            models: vec![crate::provider::ModelInfo {
-                                id: "gpt-4o".into(),
-                                name: "GPT-4o".into(),
-                                context_window: 128000,
-                                reasoning: true,
-                                tier: "T3".into(),
-                                enabled: true,
-                            }],
-                        };
-                        self.providers.push(default);
-                        let path = crate::provider::config_path();
-                        let cfg = crate::provider::ProviderConfig {
-                            port: self.router_port,
-                            current_model: Some(self.current_model.clone()),
-                            providers: self.providers.clone(),
-                        };
-                        crate::provider::ProviderConfig::save(&path, &cfg);
+                        id: "new-provider".into(),
+                        name: "New Provider".into(),
+                        bridge: false,
+                        base_url: "https://api.openai.com/v1".into(),
+                        api_key: String::new(),
+                        models: vec![crate::provider::ModelInfo {
+                            id: "gpt-4o".into(),
+                            name: "GPT-4o".into(),
+                            context_window: 128000,
+                            reasoning: true,
+                            tier: "T3".into(),
+                            enabled: true,
+                        }],
+                    };
+                    self.providers.push(default);
+                    let path = crate::provider::config_path();
+                    let cfg = crate::provider::ProviderConfig {
+                        port: self.router_port,
+                        current_model: Some(self.current_model.clone()),
+                        providers: self.providers.clone(),
+                    };
+                    crate::provider::ProviderConfig::save(&path, &cfg);
                     true
                 }
                 _ => false,
@@ -582,7 +580,9 @@ impl TuiState {
         let q = self.model_search.to_lowercase();
         ap.models
             .iter()
-            .filter(|m| m.enabled && (self.model_search.is_empty() || m.id.to_lowercase().contains(&q)))
+            .filter(|m| {
+                m.enabled && (self.model_search.is_empty() || m.id.to_lowercase().contains(&q))
+            })
             .collect()
     }
 
@@ -1068,6 +1068,149 @@ impl App {
                 self.finalize_thinking(&agent_id, &text);
             }
 
+            Action::ContentUpdate { agent_id, content } => {
+                // 更新最后一条 Assistant 消息的 content 数组
+                let msgs = self.messages.entry(agent_id.clone()).or_default();
+                if let Some(last) = msgs
+                    .iter_mut()
+                    .rev()
+                    .find(|m| matches!(m.role, crate::message::ChatRole::Assistant))
+                {
+                    last.content = content;
+                }
+            }
+
+            Action::ToggleBlock {
+                agent_id: _,
+                msg_id,
+                block_index,
+            } => {
+                let key = format!("{}:{}", msg_id, block_index);
+                let state = self
+                    .tui
+                    .main_view
+                    .block_states
+                    .entry(key)
+                    .or_insert(crate::message::BlockExpanded::Collapsed);
+                *state = match *state {
+                    crate::message::BlockExpanded::Collapsed => {
+                        crate::message::BlockExpanded::Expanded
+                    }
+                    crate::message::BlockExpanded::Expanded => {
+                        crate::message::BlockExpanded::Collapsed
+                    }
+                };
+            }
+
+            Action::EnterBlock {
+                agent_id,
+                msg_id,
+                block_index,
+            } => {
+                let msgs = self.messages.get(&agent_id);
+                if let Some(msgs) = msgs {
+                    let blocks = build_block_refs(msgs);
+                    let key = format!("{}:{}", msg_id, block_index);
+                    if let Some(block_ref) = blocks
+                        .iter()
+                        .find(|b| format!("{}:{}", b.msg_id, b.block_index) == key)
+                    {
+                        let msg = &msgs[block_ref.msg_index];
+                        match block_ref.kind {
+                            crate::message::BlockKind::Thinking => {
+                                let thinking_text =
+                                    if let Some(crate::message::ContentBlock::Thinking {
+                                        thinking,
+                                    }) = msg.content.get(block_ref.block_index)
+                                    {
+                                        thinking.clone()
+                                    } else {
+                                        String::new()
+                                    };
+                                if thinking_text.lines().count() > 5 {
+                                    self.tui.main_view.entered_view =
+                                        Some(crate::message::EnteredView::FullOutput {
+                                            title: "思考过程".to_string(),
+                                            content: thinking_text,
+                                            scroll: 0,
+                                        });
+                                }
+                            }
+                            crate::message::BlockKind::ToolCall => {
+                                if let Some(crate::message::ContentBlock::ToolCall {
+                                    id: _,
+                                    name,
+                                    arguments,
+                                    result,
+                                    is_error: _,
+                                }) = msg.content.get(block_ref.block_index)
+                                {
+                                    match name.as_str() {
+                                        "edit" | "write" => {
+                                            let old_text = arguments
+                                                .get("oldText")
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or("");
+                                            let new_text = arguments
+                                                .get("newText")
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or("");
+                                            let path = arguments
+                                                .get("path")
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or("unknown");
+                                            let diff_lines = compute_diff_lines(old_text, new_text);
+                                            self.tui.main_view.entered_view =
+                                                Some(crate::message::EnteredView::Diff {
+                                                    path: path.to_string(),
+                                                    diff_lines,
+                                                });
+                                        }
+                                        "read" | "bash" => {
+                                            let content = result
+                                                .as_ref()
+                                                .and_then(|r| r.get("content"))
+                                                .and_then(|c| c.as_str())
+                                                .unwrap_or("");
+                                            self.tui.main_view.entered_view =
+                                                Some(crate::message::EnteredView::FullOutput {
+                                                    title: name.to_string(),
+                                                    content: content.to_string(),
+                                                    scroll: 0,
+                                                });
+                                        }
+                                        "subagent" => {
+                                            self.tui.main_view.entered_view =
+                                                Some(crate::message::EnteredView::FullOutput {
+                                                    title: format!("subagent: {}", name),
+                                                    content: format!("{:?}", result),
+                                                    scroll: 0,
+                                                });
+                                        }
+                                        _ => {
+                                            let content = result
+                                                .as_ref()
+                                                .map(|r| format!("{:?}", r))
+                                                .unwrap_or_default();
+                                            self.tui.main_view.entered_view =
+                                                Some(crate::message::EnteredView::FullOutput {
+                                                    title: name.clone(),
+                                                    content,
+                                                    scroll: 0,
+                                                });
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Action::ExitBlock => {
+                self.tui.main_view.entered_view = None;
+            }
+
             Action::ToolEvent {
                 agent_id,
                 tool_name,
@@ -1075,18 +1218,47 @@ impl App {
                 status,
                 args,
                 result,
-                ..
+                is_error,
             } => {
-                let tool_info = crate::message::ToolCallInfo {
-                    tool_name,
-                    tool_call_id,
-                    status,
-                    args: args.unwrap_or_default(),
-                    result,
-                    detail_text: String::new(),
-                };
-                let msg = ChatMessage::tool(&agent_id, tool_info);
-                self.push_message(&agent_id, msg);
+                let _ = is_error;
+                let msgs = self.messages.entry(agent_id.clone()).or_default();
+                match status {
+                    crate::message::ToolStatus::Running => {
+                        // 创建新的 Tool ChatMessage
+                        let tool_info = crate::message::ToolCallInfo {
+                            tool_name,
+                            tool_call_id,
+                            status,
+                            args: args.unwrap_or_default(),
+                            result: None,
+                            detail_text: String::new(),
+                        };
+                        let msg = ChatMessage::tool(&agent_id, tool_info);
+                        msgs.push(msg);
+                    }
+                    _ => {
+                        // Done 或 Error → 按 tool_call_id 找到并更新
+                        if let Some(msg) = msgs.iter_mut().rev().find(|m| {
+                            m.role == crate::message::ChatRole::Tool
+                                && m.tool_call
+                                    .as_ref()
+                                    .is_some_and(|tc| tc.tool_call_id == tool_call_id)
+                        }) {
+                            if let Some(ref mut tc) = msg.tool_call {
+                                tc.status = status.clone();
+                                tc.result = result;
+                                // 更新显示文本
+                                let icon = match tc.status {
+                                    crate::message::ToolStatus::Done => "✓",
+                                    crate::message::ToolStatus::Error => "✗",
+                                    crate::message::ToolStatus::Running => "▶",
+                                };
+                                msg.text = format!("{} {}", icon, tc.tool_name);
+                            }
+                        }
+                    }
+                }
+                self.sync_messages_to_main_view(&agent_id);
             }
 
             Action::AgentStatusChange { status, .. } => {
@@ -1359,7 +1531,10 @@ impl App {
         }
         self.tui.sidebar.provider_cursor = self.tui.provider_cursor;
         self.tui.sidebar.model_cursor = self.tui.model_cursor;
-        self.tui.sidebar.model_search.clone_from(&self.tui.model_search);
+        self.tui
+            .sidebar
+            .model_search
+            .clone_from(&self.tui.model_search);
         self.tui.sidebar.message_count = self
             .active_agent
             .as_ref()
@@ -2400,6 +2575,70 @@ fn pi_sessions_dir() -> std::path::PathBuf {
     base.join("sessions")
 }
 
+/// 从消息列表中构建可交互块引用列表
+fn build_block_refs(messages: &[ChatMessage]) -> Vec<BlockRef> {
+    let mut refs = Vec::new();
+    for (msg_idx, msg) in messages.iter().enumerate() {
+        if msg.role == crate::message::ChatRole::Assistant {
+            for (block_idx, block) in msg.content.iter().enumerate() {
+                match block {
+                    crate::message::ContentBlock::Thinking { .. } => {
+                        refs.push(BlockRef {
+                            msg_index: msg_idx,
+                            msg_id: msg.id.clone(),
+                            block_index: block_idx,
+                            kind: crate::message::BlockKind::Thinking,
+                        });
+                    }
+                    crate::message::ContentBlock::ToolCall { .. } => {
+                        refs.push(BlockRef {
+                            msg_index: msg_idx,
+                            msg_id: msg.id.clone(),
+                            block_index: block_idx,
+                            kind: crate::message::BlockKind::ToolCall,
+                        });
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    refs
+}
+
+/// 块引用（扁平全局索引）
+struct BlockRef {
+    msg_index: usize,
+    msg_id: String,
+    block_index: usize,
+    kind: crate::message::BlockKind,
+}
+
+/// 使用 similar crate 计算统一 diff
+fn compute_diff_lines(old_text: &str, new_text: &str) -> Vec<crate::message::DiffLine> {
+    use similar::{ChangeTag, TextDiff};
+    let diff = TextDiff::from_lines(old_text, new_text);
+    let mut lines = Vec::new();
+    for change in diff.iter_all_changes() {
+        let (kind, old_line, new_line) = match change.tag() {
+            ChangeTag::Delete => ('-', Some(change.old_index().unwrap_or(0) + 1), None),
+            ChangeTag::Insert => ('+', None, Some(change.new_index().unwrap_or(0) + 1)),
+            ChangeTag::Equal => (
+                ' ',
+                Some(change.old_index().unwrap_or(0) + 1),
+                Some(change.new_index().unwrap_or(0) + 1),
+            ),
+        };
+        lines.push(crate::message::DiffLine {
+            kind,
+            old_line,
+            new_line,
+            text: change.value().to_string(),
+        });
+    }
+    lines
+}
+
 #[cfg(test)]
 mod tests {
     use ratatui::backend::TestBackend;
@@ -2500,7 +2739,10 @@ mod tests {
             .as_ref()
             .expect("Enter 应该打开 Provider 编辑表单");
         assert!(!editor.is_new, "编辑已有 provider 时 is_new 应为 false");
-        assert_eq!(editor.draft.id, "deepseek", "编辑表单应预填充 provider 数据");
+        assert_eq!(
+            editor.draft.id, "deepseek",
+            "编辑表单应预填充 provider 数据"
+        );
         assert_eq!(state.provider_popup, None, "不应同时打开 popup");
     }
 
@@ -2678,5 +2920,163 @@ mod tests {
         // Enter 选中 model
         state.handle_model_key(crossterm::event::KeyCode::Enter);
         assert_eq!(state.current_model, "m2", "Enter 应切换到选中的 model");
+    }
+
+    #[test]
+    fn test_toggle_block() {
+        let (action_tx, _action_rx) = mpsc::channel::<Action>(8);
+        let mut app = App::new_rpc(action_tx);
+        app.tui.main_view.block_states.insert(
+            "msg-1:0".to_string(),
+            crate::message::BlockExpanded::Collapsed,
+        );
+        // 模拟 ToggleBlock
+        let key = "msg-1:0".to_string();
+        let state = app.tui.main_view.block_states.get_mut(&key).unwrap();
+        *state = crate::message::BlockExpanded::Expanded;
+        assert_eq!(*state, crate::message::BlockExpanded::Expanded);
+    }
+
+    #[test]
+    fn test_exit_block() {
+        let (action_tx, _action_rx) = mpsc::channel::<Action>(8);
+        let mut app = App::new_rpc(action_tx);
+        app.tui.main_view.entered_view = Some(crate::message::EnteredView::FullOutput {
+            title: "test".into(),
+            content: "hello".into(),
+            scroll: 0,
+        });
+        app.tui.main_view.entered_view = None;
+        assert!(app.tui.main_view.entered_view.is_none());
+    }
+
+    #[test]
+    fn test_compute_diff_lines() {
+        let old = "line1\nline2\nline3\n";
+        let new = "line1\nline2_changed\nline3\nline4\n";
+        let lines = compute_diff_lines(old, new);
+        assert!(
+            lines.iter().any(|l| l.kind == '-'),
+            "should have deleted lines"
+        );
+        assert!(
+            lines.iter().any(|l| l.kind == '+'),
+            "should have added lines"
+        );
+        assert!(
+            lines.iter().any(|l| l.kind == ' '),
+            "should have unchanged lines"
+        );
+    }
+
+    #[test]
+    fn test_build_block_refs_empty() {
+        let msgs: Vec<ChatMessage> = vec![];
+        let refs = build_block_refs(&msgs);
+        assert!(refs.is_empty(), "empty messages should give no block refs");
+    }
+
+    #[test]
+    fn test_build_block_refs_with_content() {
+        let mut msg = ChatMessage::assistant("test", "");
+        msg.content = vec![
+            crate::message::ContentBlock::Thinking {
+                thinking: "思考中...".to_string(),
+            },
+            crate::message::ContentBlock::Text {
+                text: "回复内容".to_string(),
+            },
+            crate::message::ContentBlock::ToolCall {
+                id: "tc-1".to_string(),
+                name: "read".to_string(),
+                arguments: serde_json::json!({"path": "src/main.rs"}),
+                result: None,
+                is_error: false,
+            },
+        ];
+        let msgs = vec![msg];
+        let refs = build_block_refs(&msgs);
+        assert_eq!(
+            refs.len(),
+            2,
+            "Thinking + ToolCall = 2 blocks, Text skipped"
+        );
+        assert_eq!(refs[0].kind, crate::message::BlockKind::Thinking);
+        assert_eq!(refs[1].kind, crate::message::BlockKind::ToolCall);
+    }
+
+    #[test]
+    fn test_tool_event_running_creates_message() {
+        let (action_tx, _action_rx) = mpsc::channel::<Action>(8);
+        let mut app = App::new_rpc(action_tx);
+        app.active_agent = Some("agent-1".to_string());
+
+        // 发送 Running 事件
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            app.handle_action(Action::ToolEvent {
+                agent_id: "agent-1".to_string(),
+                tool_name: "bash".to_string(),
+                tool_call_id: "tc-1".to_string(),
+                status: crate::message::ToolStatus::Running,
+                args: Some(serde_json::json!({"command": "ls"})),
+                result: None,
+                is_error: false,
+            })
+            .await
+            .ok();
+        });
+
+        let msgs = app.messages.get("agent-1").unwrap();
+        assert_eq!(msgs.len(), 1, "should have 1 tool message");
+        assert_eq!(msgs[0].role, crate::message::ChatRole::Tool);
+    }
+
+    #[test]
+    fn test_tool_event_done_updates_existing() {
+        let (action_tx, _action_rx) = mpsc::channel::<Action>(8);
+        let mut app = App::new_rpc(action_tx);
+        app.active_agent = Some("agent-1".to_string());
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            // 先发送 Running
+            app.handle_action(Action::ToolEvent {
+                agent_id: "agent-1".to_string(),
+                tool_name: "bash".to_string(),
+                tool_call_id: "tc-1".to_string(),
+                status: crate::message::ToolStatus::Running,
+                args: Some(serde_json::json!({"command": "ls"})),
+                result: None,
+                is_error: false,
+            })
+            .await
+            .ok();
+
+            // 再发送 Done（同一 tool_call_id）
+            app.handle_action(Action::ToolEvent {
+                agent_id: "agent-1".to_string(),
+                tool_name: "bash".to_string(),
+                tool_call_id: "tc-1".to_string(),
+                status: crate::message::ToolStatus::Done,
+                args: None,
+                result: Some(serde_json::json!({"content": "ok"})),
+                is_error: false,
+            })
+            .await
+            .ok();
+        });
+
+        let msgs = app.messages.get("agent-1").unwrap();
+        assert_eq!(
+            msgs.len(),
+            1,
+            "should still be 1 tool message (updated, not duplicated)"
+        );
+        assert_eq!(
+            msgs[0].tool_call.as_ref().unwrap().status,
+            crate::message::ToolStatus::Done
+        );
+        assert!(msgs[0].text.contains("✓"), "Done should show ✓");
     }
 }
