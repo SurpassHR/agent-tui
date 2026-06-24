@@ -131,6 +131,24 @@ impl MainView {
                 lines.push(Line::from(vec![" pi ".to_string().fg(theme.accent).bold()]));
                 lines.push(Line::from(vec![" ─".to_string().fg(theme.text_dim)]));
 
+                // 若 content 为空（ContentUpdate 尚未到达），回退到 text/thinking 字段
+                if message.content.is_empty() {
+                    if let Some(ref thinking) = message.thinking {
+                        if !thinking.is_empty() {
+                            let preview: String =
+                                thinking.lines().take(3).collect::<Vec<_>>().join("\n");
+                            lines.push(Line::from(vec![format!(" [思考] {}", preview)
+                                .fg(theme.text_dim)
+                                .dim()]));
+                        }
+                    }
+                    for text_line in message.text.lines() {
+                        lines.push(Line::from(vec![format!(" {}", text_line).fg(theme.text)]));
+                    }
+                    lines.push(Line::from(""));
+                    return lines;
+                }
+
                 // 遍历 content 数组渲染内容块
                 for (block_idx, block) in message.content.iter().enumerate() {
                     let key = format!("{}:{}", message.id, block_idx);

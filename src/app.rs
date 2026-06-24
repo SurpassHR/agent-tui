@@ -1069,7 +1069,8 @@ impl App {
             }
 
             Action::ContentUpdate { agent_id, content } => {
-                // 更新最后一条 Assistant 消息的 content 数组
+                // 更新最后一条 Assistant 消息的 content 数组；
+                // 若不存在则创建（处理首帧 message_update 不含 delta 的情况）
                 let msgs = self.messages.entry(agent_id.clone()).or_default();
                 if let Some(last) = msgs
                     .iter_mut()
@@ -1077,6 +1078,10 @@ impl App {
                     .find(|m| matches!(m.role, crate::message::ChatRole::Assistant))
                 {
                     last.content = content;
+                } else {
+                    let mut msg = ChatMessage::assistant(&agent_id, "");
+                    msg.content = content;
+                    msgs.push(msg);
                 }
             }
 
