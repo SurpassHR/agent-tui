@@ -1,6 +1,6 @@
 use ratatui::layout::Rect;
-use ratatui::style::{Style, Stylize};
-use ratatui::text::Line;
+use ratatui::style::{Modifier, Style, Stylize};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
@@ -122,7 +122,13 @@ impl MainView {
                 // 分隔线和内容
                 lines.push(Line::from(vec![" ─".to_string().fg(theme.text_dim)]));
                 for text_line in message.text.lines() {
-                    lines.push(Line::from(vec![format!(" {}", text_line).fg(theme.text)]));
+                    let prefix = Span::from(" ").style(Style::default().fg(theme.text));
+                    let mut spans = vec![prefix];
+                    spans.extend(crate::parse_ansi_spans(
+                        text_line,
+                        Style::default().fg(theme.text),
+                    ));
+                    lines.push(Line::from(spans));
                 }
                 lines.push(Line::from(""));
             }
@@ -135,15 +141,22 @@ impl MainView {
                 if message.content.is_empty() {
                     if let Some(ref thinking) = message.thinking {
                         if !thinking.is_empty() {
+                            let clean = crate::strip_ansi(thinking);
                             let preview: String =
-                                thinking.lines().take(3).collect::<Vec<_>>().join("\n");
+                                clean.lines().take(3).collect::<Vec<_>>().join("\n");
                             lines.push(Line::from(vec![format!(" [思考] {}", preview)
                                 .fg(theme.text_dim)
-                                .dim()]));
+                                .add_modifier(Modifier::DIM)]));
                         }
                     }
                     for text_line in message.text.lines() {
-                        lines.push(Line::from(vec![format!(" {}", text_line).fg(theme.text)]));
+                        let prefix = Span::from(" ").style(Style::default().fg(theme.text));
+                        let mut spans = vec![prefix];
+                        spans.extend(crate::parse_ansi_spans(
+                            text_line,
+                            Style::default().fg(theme.text),
+                        ));
+                        lines.push(Line::from(spans));
                     }
                     lines.push(Line::from(""));
                     return lines;
@@ -168,9 +181,10 @@ impl MainView {
                     match block {
                         crate::message::ContentBlock::Thinking { thinking } => match state {
                             crate::message::BlockExpanded::Collapsed => {
+                                let clean = crate::strip_ansi(thinking);
                                 let preview: String =
-                                    thinking.lines().take(1).collect::<Vec<_>>().join("\n");
-                                let chars = thinking.chars().count();
+                                    clean.lines().take(1).collect::<Vec<_>>().join("\n");
+                                let chars = clean.chars().count();
                                 let text = format!(" ▶ [思考] {} 字 — {}", chars, preview);
                                 let span = text.fg(theme.text_dim);
                                 if is_block_selected {
@@ -180,28 +194,40 @@ impl MainView {
                                 }
                             }
                             crate::message::BlockExpanded::Expanded => {
-                                let span = format!(" ▼ [思考] {} 字", thinking.chars().count())
+                                let clean = crate::strip_ansi(thinking);
+                                let span = format!(" ▼ [思考] {} 字", clean.chars().count())
                                     .fg(theme.text_dim);
                                 if is_block_selected {
                                     lines.push(Line::from(vec![span.bg(theme.highlight_bg)]));
                                 } else {
                                     lines.push(Line::from(vec![span]));
                                 }
+                                // 按 ANSI 解析渲染思考内容
+                                let thinking_base = Style::default()
+                                    .fg(theme.text_dim)
+                                    .add_modifier(Modifier::DIM);
                                 for think_line in thinking.lines() {
-                                    let s = format!("   {}", think_line).fg(theme.text_dim);
+                                    let prefix = Span::from("   ").style(thinking_base);
+                                    let mut spans = vec![prefix];
+                                    spans
+                                        .extend(crate::parse_ansi_spans(think_line, thinking_base));
+                                    let mut line = Line::from(spans);
                                     if is_block_selected {
-                                        lines.push(Line::from(vec![s.bg(theme.highlight_bg)]));
-                                    } else {
-                                        lines.push(Line::from(vec![s]));
+                                        line = line.bg(theme.highlight_bg);
                                     }
+                                    lines.push(line);
                                 }
                             }
                         },
                         crate::message::ContentBlock::Text { text } => {
                             for text_line in text.lines() {
-                                lines.push(Line::from(vec![
-                                    format!(" {}", text_line).fg(theme.text)
-                                ]));
+                                let prefix = Span::from(" ").style(Style::default().fg(theme.text));
+                                let mut spans = vec![prefix];
+                                spans.extend(crate::parse_ansi_spans(
+                                    text_line,
+                                    Style::default().fg(theme.text),
+                                ));
+                                lines.push(Line::from(spans));
                             }
                         }
                         crate::message::ContentBlock::ToolCall {
@@ -309,16 +335,26 @@ impl MainView {
             }
 
             ChatRole::System => {
-                lines.push(Line::from(vec![format!(" {}", message.text)
+                let base = Style::default()
                     .fg(theme.text_dim)
-                    .dim()]));
+                    .add_modifier(Modifier::DIM);
+                for text_line in message.text.lines() {
+                    let prefix = Span::from(" ").style(base);
+                    let mut spans = vec![prefix];
+                    spans.extend(crate::parse_ansi_spans(text_line, base));
+                    lines.push(Line::from(spans));
+                }
                 lines.push(Line::from(""));
             }
 
             ChatRole::Error => {
-                lines.push(Line::from(vec![
-                    format!(" ⚠ {}", message.text).fg(theme.accent)
-                ]));
+                let base = Style::default().fg(theme.accent);
+                for text_line in message.text.lines() {
+                    let prefix = Span::from(" ⚠ ").style(base);
+                    let mut spans = vec![prefix];
+                    spans.extend(crate::parse_ansi_spans(text_line, base));
+                    lines.push(Line::from(spans));
+                }
                 lines.push(Line::from(""));
             }
         }
@@ -542,8 +578,12 @@ impl MainView {
         lines.push(Line::from(vec![header.fg(theme.text_dim)]));
 
         // 跳过 scroll 行
+        let base = Style::default().fg(theme.text);
         for text_line in content.lines() {
-            lines.push(Line::from(vec![format!(" {}", text_line).fg(theme.text)]));
+            let prefix = Span::from(" ").style(base);
+            let mut spans = vec![prefix];
+            spans.extend(crate::parse_ansi_spans(text_line, base));
+            lines.push(Line::from(spans));
         }
 
         let footer = "└".to_string() + &"─".repeat(inner.width.saturating_sub(2).max(1) as usize);
