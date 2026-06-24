@@ -1134,6 +1134,24 @@ impl App {
                                             content: thinking_text,
                                             scroll: 0,
                                         });
+                                } else {
+                                    // ≤ 5 行：折叠时展开，已展开时无效果
+                                    let block_key =
+                                        format!("{}:{}", msg_id, block_index);
+                                    let state = self
+                                        .tui
+                                        .main_view
+                                        .block_states
+                                        .entry(block_key)
+                                        .or_insert(
+                                            crate::message::BlockExpanded::Collapsed,
+                                        );
+                                    if *state
+                                        == crate::message::BlockExpanded::Collapsed
+                                    {
+                                        *state =
+                                            crate::message::BlockExpanded::Expanded;
+                                    }
                                 }
                             }
                             crate::message::BlockKind::ToolCall => {

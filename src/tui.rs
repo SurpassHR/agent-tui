@@ -780,6 +780,29 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                                 == crate::app::MainViewSubsection::Messages =>
                         {
                             match key.code {
+                                // EnteredView 内 ↑/↓ 滚动
+                                crossterm::event::KeyCode::Up
+                                    if app.tui.main_view.entered_view.is_some() =>
+                                {
+                                    if let Some(crate::message::EnteredView::FullOutput {
+                                        ref mut scroll,
+                                        ..
+                                    }) = app.tui.main_view.entered_view
+                                    {
+                                        *scroll = scroll.saturating_sub(1);
+                                    }
+                                }
+                                crossterm::event::KeyCode::Down
+                                    if app.tui.main_view.entered_view.is_some() =>
+                                {
+                                    if let Some(crate::message::EnteredView::FullOutput {
+                                        ref mut scroll,
+                                        ..
+                                    }) = app.tui.main_view.entered_view
+                                    {
+                                        *scroll += 1;
+                                    }
+                                }
                                 crossterm::event::KeyCode::Up => {
                                     let cur = app.tui.message_cursor;
                                     if cur > 0 {
@@ -847,32 +870,19 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                                     }
                                 }
                                 crossterm::event::KeyCode::Char(' ') => {
-                                    // Space 切换块的折叠/展开
+                                    // Space 通过 Action 切换块的折叠/展开
                                     let blocks = build_flat_blocks_for_tui(
                                         &app.tui.main_view.messages,
                                     );
                                     if app.tui.main_view.block_cursor < blocks.len() {
                                         let bref = &blocks[app.tui.main_view.block_cursor];
-                                        let key = format!(
-                                            "{}:{}",
-                                            bref.msg_id, bref.block_index
-                                        );
-                                        let state = app
-                                            .tui
-                                            .main_view
-                                            .block_states
-                                            .entry(key)
-                                            .or_insert(
-                                                crate::message::BlockExpanded::Collapsed,
-                                            );
-                                        *state = match *state {
-                                            crate::message::BlockExpanded::Collapsed => {
-                                                crate::message::BlockExpanded::Expanded
-                                            }
-                                            crate::message::BlockExpanded::Expanded => {
-                                                crate::message::BlockExpanded::Collapsed
-                                            }
-                                        };
+                                        app.handle_action(Action::ToggleBlock {
+                                            agent_id: agent_id.clone(),
+                                            msg_id: bref.msg_id.clone(),
+                                            block_index: bref.block_index,
+                                        })
+                                        .await
+                                        .ok();
                                     }
                                 }
                                 _ => {}
