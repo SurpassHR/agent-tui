@@ -557,14 +557,14 @@ impl<'a> MarkdownRenderer<'a> {
         // │ {num} │ {code_line}  │ — 固定框架 3 个 │ + 5 个空格 = 8 字符
         let total_width = (content_max_w + num_width + 8).max(20);
 
-        // 顶部边框（总宽匹配 body）
+        // 顶部边框（总宽匹配 body，包含左右两个角）
         let top = if self.code_block_lang.is_empty() {
-            format!("┌{}", "─".repeat(total_width.saturating_sub(1)))
+            format!("┌{}┐", "─".repeat(total_width.saturating_sub(2)))
         } else {
             let lang_tag = format!("── {} ──", self.code_block_lang);
             let lang_w = unicode_width::UnicodeWidthStr::width(lang_tag.as_str());
-            let remaining = total_width.saturating_sub(lang_w + 1); // +1 for ┌
-            format!("┌{}{}", lang_tag, "─".repeat(remaining))
+            let remaining = total_width.saturating_sub(lang_w + 2); // +2 for ┌ and ┐
+            format!("┌{}{}┐", lang_tag, "─".repeat(remaining))
         };
         self.lines.push(Line::from(Span::styled(top, border_style)));
 
@@ -581,7 +581,7 @@ impl<'a> MarkdownRenderer<'a> {
         }
 
         // 底部边框
-        let bottom = "└".to_string() + &"─".repeat(total_width.saturating_sub(1));
+        let bottom = format!("└{}┘", "─".repeat(total_width.saturating_sub(2)));
         self.lines
             .push(Line::from(Span::styled(bottom, border_style)));
         self.lines.push(Line::from(""));
