@@ -486,10 +486,10 @@ impl Component for Sidebar {
         let ws_title = if self.has_focus && self.subsection == SidebarSubsection::Workspace {
             Line::from(vec![
                 "▎".to_string().fg(theme.accent),
-                "工作区".to_string().fg(theme.accent).bold(),
+                "WORKSPACE".to_string().fg(theme.accent).bold(),
             ])
         } else {
-            Line::from(" 工作区".to_string().fg(theme.heading).bold())
+            Line::from(" WORKSPACE".to_string().fg(theme.heading).bold())
         };
         ws_lines.push(ws_title);
         let (tree_lines, ws_count, sess_count) = self.render_workspace_tree(theme);

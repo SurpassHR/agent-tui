@@ -101,4 +101,33 @@ pub enum Action {
     CycleFocusPanel(i32),
     /// 子区焦点切换（1=向下，-1=向上）
     CycleFocusSubsection(i32),
+
+    // --- 工作区 CRUD ---
+    /// 新建工作区目录
+    CreateWorkspace(String),
+    /// 在指定工作区下新建会话
+    CreateSession {
+        workspace_index: usize,
+        name: String,
+    },
+    /// 删除指定索引的工作区（含所有会话）
+    DeleteWorkspace(usize),
+    /// 删除指定工作区下的指定会话
+    DeleteSession {
+        workspace_index: usize,
+        session_index: usize,
+    },
+    /// 重命名指定索引的工作区
+    RenameWorkspace { index: usize, new_name: String },
+    /// 重命名指定工作区下的指定会话
+    RenameSession {
+        workspace_index: usize,
+        session_index: usize,
+        new_name: String,
+    },
+    /// 触发 AI 自动重命名会话
+    AiRenameSession {
+        workspace_index: usize,
+        session_index: usize,
+    },
 }

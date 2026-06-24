@@ -11,7 +11,7 @@ Meta-TUI 通过 **RPC** 连接 `pi`（或其他 CLI 智能体），提供三栏 
 
 - **左侧栏**：活跃会话 + 工作区树（可展开会话列表）
 - **中部**：对话/消息区 + 底部输入框
-- **右侧栏**：subagent 列表（从 `~/.pi/agent/agents/*.md` 发现）
+- **右侧栏**：subagent 列表（AGENTS）+ SKILLS + MCPS + TASKS（从 `~/.pi/agent/` 发现）
 - **底栏**：键盘快捷键 + 状态提示 + Context/Token/Cost 信息
 
 文字选中限制在每栏边界内，松手自动复制到系统剪贴板。
@@ -59,19 +59,24 @@ meta-tui/
 │   ├── config.rs            # CLI 参数解析
 │   ├── errors.rs            # 错误类型
 │   ├── logging.rs           # 日志初始化
-│   ├── message.rs           # ChatMessage 消息模型
+│   ├── message.rs           # ChatMessage + ContentBlock 消息模型
 │   ├── theme.rs             # Cyan 工业主题
 │   ├── backend/
 │   │   ├── mod.rs           # AgentBackend trait
 │   │   ├── rpc.rs           # PiRpcBackend（进程管理）
 │   │   ├── rpc_client.rs    # JSONL RPC 客户端
 │   │   └── event.rs         # PiEvent 类型 + 解析
+│   ├── provider/
+│   │   ├── mod.rs           # ProviderConfig 数据模型 + 持久化
+│   │   └── router.rs        # axum HTTP 反向代理
 │   └── components/
 │       ├── mod.rs           # Component trait (&mut self)
-│       ├── sidebar.rs       # 左：会话 + 工作区树 + MODEL
-│       ├── main_view.rs     # 中：对话 + 输入框
-│       ├── agent_panel.rs   # 右：subagent 列表
+│       ├── sidebar.rs       # 左：会话 + 工作区树 + PROVIDER/MODEL
+│       ├── main_view.rs     # 中：对话 + 输入框 + 块折叠
+│       ├── markdown.rs      # Markdown → Ratatui Line 渲染器（GFM + 代码块）
+│       ├── agent_panel.rs   # 右：AGENTS / SKILLS / MCPS / TASKS
 │       ├── bottom_bar.rs    # 底：快捷键 + 状态 + Token
+│       ├── top_bar.rs       # 顶部 Tab 栏
 │       └── popup.rs         # 弹窗浮层
 └── tests/
     └── integration_test.rs

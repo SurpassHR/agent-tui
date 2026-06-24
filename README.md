@@ -11,7 +11,7 @@ Meta-TUI connects to `pi` (or other CLI agents) via **RPC**, providing a three-p
 
 - **Left panel**: Active session + workspace tree (expandable session list)
 - **Center**: Conversation/message area + bottom input box
-- **Right panel**: Subagent list (discovered from `~/.pi/agent/agents/*.md`)
+- **Right panel**: Subagent list (AGENTS) + SKILLS + MCPS + TASKS (discovered from `~/.pi/agent/`)
 - **Bottom bar**: Keyboard shortcuts + status hints + Context/Token/Cost info
 
 Text selection is confined within each panel boundary; releasing the mouse automatically copies the selection to the system clipboard.
@@ -59,19 +59,24 @@ meta-tui/
 │   ├── config.rs            # CLI argument parsing
 │   ├── errors.rs            # Error types
 │   ├── logging.rs           # Log initialization
-│   ├── message.rs           # ChatMessage model
+│   ├── message.rs           # ChatMessage + ContentBlock model
 │   ├── theme.rs             # Cyan industrial theme
 │   ├── backend/
 │   │   ├── mod.rs           # AgentBackend trait
 │   │   ├── rpc.rs           # PiRpcBackend (process management)
 │   │   ├── rpc_client.rs    # JSONL RPC client
 │   │   └── event.rs         # PiEvent types + parsing
+│   ├── provider/
+│   │   ├── mod.rs           # ProviderConfig + persistence
+│   │   └── router.rs        # axum HTTP reverse proxy
 │   └── components/
 │       ├── mod.rs           # Component trait (&mut self)
-│       ├── sidebar.rs       # Left: session + workspace tree + MODEL
-│       ├── main_view.rs     # Center: conversation + input
-│       ├── agent_panel.rs   # Right: subagent list
+│       ├── sidebar.rs       # Left: session + workspace tree + PROVIDER/MODEL
+│       ├── main_view.rs     # Center: conversation + input + block collapse
+│       ├── markdown.rs      # Markdown → Ratatui Line renderer (GFM + code blocks)
+│       ├── agent_panel.rs   # Right: AGENTS / SKILLS / MCPS / TASKS
 │       ├── bottom_bar.rs    # Bottom: shortcuts + status + Token
+│       ├── top_bar.rs       # Top tab bar
 │       └── popup.rs         # Popup overlay
 └── tests/
     └── integration_test.rs
