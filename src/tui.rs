@@ -14,32 +14,64 @@ use crate::backend::rpc::PiRpcBackend;
 use crate::errors::Result;
 use crate::message::ToolStatus;
 
-/// 将 PiEvent 翻译为 Action
-fn translate_pi_event(event: PiEvent, agent_id: &str) -> Option<Action> {
-    match event {
+/// 将 PiEvent 翻译为一个或多个 Action
+///
+/// 对于 MessageUpdate，同时发出 delta 事件（打字机效果）和 ContentUpdate（块数组快照）。
+fn translate_pi_events(event: PiEvent, agent_id: &str) -> Vec<Action> {
+    let mut actions = Vec::new();
+    match &event {
         PiEvent::MessageUpdate {
-            assistant_event, ..
-        } => match assistant_event.event_type {
-            AssistantEventType::TextDelta => Some(Action::MessageAppend {
-                agent_id: agent_id.into(),
-                text: assistant_event.delta.unwrap_or_default(),
-            }),
-            AssistantEventType::ThinkingDelta => Some(Action::ThinkingAppend {
-                agent_id: agent_id.into(),
-                text: assistant_event.delta.unwrap_or_default(),
-            }),
-            AssistantEventType::ThinkingEnd => Some(Action::ThinkingFinalize {
-                agent_id: agent_id.into(),
-                text: assistant_event.delta.unwrap_or_default(),
-            }),
-            AssistantEventType::MessageEnd | AssistantEventType::Done => {
-                Some(Action::MessageFinalize {
-                    agent_id: agent_id.into(),
-                })
+            assistant_event,
+            message,
+            ..
+        } => {
+            // 1. delta 事件（打字机效果）
+            match assistant_event.event_type {
+                AssistantEventType::TextDelta => {
+                    actions.push(Action::MessageAppend {
+                        agent_id: agent_id.into(),
+                        text: assistant_event.delta.clone().unwrap_or_default(),
+                    });
+                }
+                AssistantEventType::ThinkingDelta => {
+                    actions.push(Action::ThinkingAppend {
+                        agent_id: agent_id.into(),
+                        text: assistant_event.delta.clone().unwrap_or_default(),
+                    });
+                }
+                AssistantEventType::ThinkingEnd => {
+                    actions.push(Action::ThinkingFinalize {
+                        agent_id: agent_id.into(),
+                        text: assistant_event.delta.clone().unwrap_or_default(),
+                    });
+                }
+                AssistantEventType::MessageEnd | AssistantEventType::Done => {
+                    actions.push(Action::MessageFinalize {
+                        agent_id: agent_id.into(),
+                    });
+                }
+                _ => {}
             }
-            _ => None,
-        },
+            // 2. ContentUpdate（块数组快照）
+            if let Some(ref data) = message {
+                actions.push(Action::ContentUpdate {
+                    agent_id: agent_id.into(),
+                    content: data.content.clone(),
+                });
+            }
+        }
+        _ => {
+            if let Some(a) = translate_single_action(event, agent_id) {
+                actions.push(a);
+            }
+        }
+    }
+    actions
+}
 
+/// 处理非 MessageUpdate 事件的单 Action 翻译（保留原 translate_pi_event 逻辑）
+fn translate_single_action(event: PiEvent, agent_id: &str) -> Option<Action> {
+    match event {
         PiEvent::AgentStart => Some(Action::AgentStatusChange {
             agent_id: agent_id.into(),
             status: AgentStatus::Running,
@@ -346,9 +378,9 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
         tokio::select! {
             // 定时刷新
             _ = ticker.tick() => {
-                // 处理 pi 事件
+                // 处理 pi 事件（支持多 Action 返回，如 ContentUpdate + delta）
                 while let Ok(event) = client.event_rx.try_recv() {
-                    if let Some(action) = translate_pi_event(event, &agent_id) {
+                    for action in translate_pi_events(event, &agent_id) {
                         if let Err(e) = app.handle_action(action).await {
                             tracing::error!("handle_action error: {}", e);
                         }
@@ -546,12 +578,58 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                         crossterm::event::KeyCode::Up
                             if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) =>
                         {
-                            app.handle_action(Action::CycleFocusSubsection(-1)).await.ok();
+                            // MainView + Messages 子区中：块导航
+                            // 其他面板：焦点子区循环
+                            if *focus == crate::app::FocusPanel::MainView
+                                && app.tui.main_view_subsection
+                                    == crate::app::MainViewSubsection::Messages
+                            {
+                                let blocks =
+                                    build_flat_blocks_for_tui(&app.tui.main_view.messages);
+                                let cur = app.tui.main_view.block_cursor;
+                                if cur > 0 && !blocks.is_empty() {
+                                    app.tui.main_view.block_cursor = cur - 1;
+                                    if let Some(bref) =
+                                        blocks.get(app.tui.main_view.block_cursor)
+                                    {
+                                        app.tui.message_cursor = bref.msg_index;
+                                        app.tui.scroll_mode =
+                                            crate::app::ScrollMode::Pinned;
+                                    }
+                                }
+                            } else {
+                                app.handle_action(Action::CycleFocusSubsection(-1))
+                                    .await
+                                    .ok();
+                            }
                         }
                         crossterm::event::KeyCode::Down
                             if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) =>
                         {
-                            app.handle_action(Action::CycleFocusSubsection(1)).await.ok();
+                            // MainView + Messages 子区中：块导航
+                            // 其他面板：焦点子区循环
+                            if *focus == crate::app::FocusPanel::MainView
+                                && app.tui.main_view_subsection
+                                    == crate::app::MainViewSubsection::Messages
+                            {
+                                let blocks =
+                                    build_flat_blocks_for_tui(&app.tui.main_view.messages);
+                                let cur = app.tui.main_view.block_cursor;
+                                if cur + 1 < blocks.len() {
+                                    app.tui.main_view.block_cursor = cur + 1;
+                                    if let Some(bref) =
+                                        blocks.get(app.tui.main_view.block_cursor)
+                                    {
+                                        app.tui.message_cursor = bref.msg_index;
+                                        app.tui.scroll_mode =
+                                            crate::app::ScrollMode::Pinned;
+                                    }
+                                }
+                            } else {
+                                app.handle_action(Action::CycleFocusSubsection(1))
+                                    .await
+                                    .ok();
+                            }
                         }
 
                         // Ctrl+C: 退出
@@ -572,9 +650,11 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                             app.agent_status = AgentStatus::Idle;
                         }
 
-                        // Esc: 关闭 Popup / 编辑表单
+                        // Esc: 退出详情视图 / 关闭 Popup / 编辑表单
                         crossterm::event::KeyCode::Esc => {
-                            if app.tui.provider_editor.is_some() {
+                            if app.tui.main_view.entered_view.is_some() {
+                                app.handle_action(Action::ExitBlock).await.ok();
+                            } else if app.tui.provider_editor.is_some() {
                                 let has_mgr = app
                                     .tui
                                     .provider_editor
@@ -717,24 +797,80 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                                     }
                                 }
                                 crossterm::event::KeyCode::Enter => {
-                                    if let Some(msg) = app
-                                        .tui
-                                        .main_view
-                                        .messages
-                                        .get(app.tui.message_cursor)
+                                    // 块选中时进入详情视图
+                                    let blocks = build_flat_blocks_for_tui(
+                                        &app.tui.main_view.messages,
+                                    );
+                                    if !blocks.is_empty()
+                                        && app.tui.main_view.block_cursor < blocks.len()
+                                        && app.tui.main_view.entered_view.is_none()
                                     {
-                                        let title = match msg.role {
-                                            crate::message::ChatRole::User => "你".into(),
-                                            crate::message::ChatRole::Assistant => "pi".into(),
-                                            crate::message::ChatRole::Tool => {
-                                                "工具".into()
+                                        let bref = &blocks[app.tui.main_view.block_cursor];
+                                        app.handle_action(Action::EnterBlock {
+                                            agent_id: agent_id.clone(),
+                                            msg_id: bref.msg_id.clone(),
+                                            block_index: bref.block_index,
+                                        })
+                                        .await
+                                        .ok();
+                                    } else if app.tui.main_view.entered_view.is_none() {
+                                        // 无块选中时打开消息弹出（原行为）
+                                        if let Some(msg) = app
+                                            .tui
+                                            .main_view
+                                            .messages
+                                            .get(app.tui.message_cursor)
+                                        {
+                                            let title = match msg.role {
+                                                crate::message::ChatRole::User => {
+                                                    "你".into()
+                                                }
+                                                crate::message::ChatRole::Assistant => {
+                                                    "pi".into()
+                                                }
+                                                crate::message::ChatRole::Tool => {
+                                                    "工具".into()
+                                                }
+                                                crate::message::ChatRole::System => {
+                                                    "系统".into()
+                                                }
+                                                crate::message::ChatRole::Error => {
+                                                    "错误".into()
+                                                }
+                                            };
+                                            app.tui.popup.title = title;
+                                            app.tui.popup.description = msg.text.clone();
+                                            app.tui.popup.visible = true;
+                                        }
+                                    }
+                                }
+                                crossterm::event::KeyCode::Char(' ') => {
+                                    // Space 切换块的折叠/展开
+                                    let blocks = build_flat_blocks_for_tui(
+                                        &app.tui.main_view.messages,
+                                    );
+                                    if app.tui.main_view.block_cursor < blocks.len() {
+                                        let bref = &blocks[app.tui.main_view.block_cursor];
+                                        let key = format!(
+                                            "{}:{}",
+                                            bref.msg_id, bref.block_index
+                                        );
+                                        let state = app
+                                            .tui
+                                            .main_view
+                                            .block_states
+                                            .entry(key)
+                                            .or_insert(
+                                                crate::message::BlockExpanded::Collapsed,
+                                            );
+                                        *state = match *state {
+                                            crate::message::BlockExpanded::Collapsed => {
+                                                crate::message::BlockExpanded::Expanded
                                             }
-                                            crate::message::ChatRole::System => "系统".into(),
-                                            crate::message::ChatRole::Error => "错误".into(),
+                                            crate::message::BlockExpanded::Expanded => {
+                                                crate::message::BlockExpanded::Collapsed
+                                            }
                                         };
-                                        app.tui.popup.title = title;
-                                        app.tui.popup.description = msg.text.clone();
-                                        app.tui.popup.visible = true;
                                     }
                                 }
                                 _ => {}
@@ -1067,6 +1203,36 @@ fn write_clipboard(text: &str) {
     }
 
     tracing::warn!("未找到可用的剪贴板工具 (wl-copy/xclip/xsel/pbcopy/clip)");
+}
+
+/// 构建设置消息的平坦可交互块引用列表（用于 Alt+↑/↓ 导航）
+fn build_flat_blocks_for_tui(messages: &[crate::message::ChatMessage]) -> Vec<FlatBlockRef> {
+    let mut refs = Vec::new();
+    for (msg_idx, msg) in messages.iter().enumerate() {
+        if msg.role == crate::message::ChatRole::Assistant {
+            for (block_idx, block) in msg.content.iter().enumerate() {
+                match block {
+                    crate::message::ContentBlock::Thinking { .. }
+                    | crate::message::ContentBlock::ToolCall { .. } => {
+                        refs.push(FlatBlockRef {
+                            msg_index: msg_idx,
+                            msg_id: msg.id.clone(),
+                            block_index: block_idx,
+                        });
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    refs
+}
+
+/// 块引用（用于块导航的扁平全局索引）
+struct FlatBlockRef {
+    msg_index: usize,
+    msg_id: String,
+    block_index: usize,
 }
 
 /// 检查 Ctrl+C（用于错误状态的简单轮询）
