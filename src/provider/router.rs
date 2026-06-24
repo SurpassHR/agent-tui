@@ -251,7 +251,11 @@ async fn standard_chat_proxy(
         "POST {} | body={} | auth={}",
         target_url,
         &body_str[..body_str.len().min(500)],
-        if target.api_key.is_empty() { "none" } else { "Bearer ***" }
+        if target.api_key.is_empty() {
+            "none"
+        } else {
+            "Bearer ***"
+        }
     );
 
     req_builder = req_builder.body(bytes.to_vec());

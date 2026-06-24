@@ -1429,7 +1429,63 @@ impl App {
 
             Action::SelectSession(session_id) => {
                 self.tui.active_session = session_id.clone();
-                tracing::debug!("切换到会话: {}", session_id);
+                tracing::info!("切换到会话: {}", session_id);
+
+                // 查找 session 的 file_path
+                let file_path = self.tui.workspaces.iter().find_map(|ws| {
+                    ws.sessions
+                        .iter()
+                        .find(|s| s.id == session_id)
+                        .and_then(|s| s.file_path.clone())
+                });
+
+                if let Some(ref path) = file_path {
+                    tracing::info!("加载会话文件: {}", path);
+                    match load_session_messages(path) {
+                        Ok(messages) => {
+                            self.messages.insert(session_id.clone(), messages);
+                            self.active_agent = Some(session_id.clone());
+                            // 更新 session 信息（供 sync_components 同步到 sidebar）
+                            self.session.id = session_id.clone();
+                            self.session.file_path = Some(path.clone());
+                            // 从工作区数据中获取 session 名称
+                            if let Some(ws) = self
+                                .tui
+                                .workspaces
+                                .iter()
+                                .find(|ws| ws.sessions.iter().any(|s| s.id == session_id))
+                            {
+                                if let Some(sess) = ws.sessions.iter().find(|s| s.id == session_id)
+                                {
+                                    self.session.name = Some(sess.name.clone());
+                                }
+                            }
+                            // 同步消息到 MainView
+                            self.sync_messages_to_main_view(&session_id);
+                            // 同步组件状态
+                            self.sync_components();
+                            tracing::info!(
+                                "会话加载完成: {} 条消息",
+                                self.messages.get(&session_id).map(|m| m.len()).unwrap_or(0)
+                            );
+                        }
+                        Err(e) => {
+                            tracing::error!("加载会话文件失败: {} — {}", path, e);
+                            self.tui.bottom_bar.status = format!("加载会话失败: {}", e);
+                        }
+                    }
+                } else {
+                    tracing::warn!("未找到会话文件: {}", session_id);
+                    // 即使没有文件，也切换 active_agent（新会话）
+                    self.active_agent = Some(session_id.clone());
+                    self.session.id = session_id.clone();
+                    self.session.name = None;
+                    self.session.file_path = None;
+                    // 清空当前消息
+                    self.messages.remove(&session_id);
+                    self.sync_messages_to_main_view(&session_id);
+                    self.sync_components();
+                }
             }
 
             Action::SidebarMove(delta) => {
@@ -2709,6 +2765,205 @@ fn pi_sessions_dir() -> std::path::PathBuf {
             std::path::PathBuf::from(home).join(".pi").join("agent")
         });
     base.join("sessions")
+}
+
+/// 从 pi session JSONL 文件中加载所有消息
+///
+/// pi session 文件格式为 JSONL，每行一个 JSON 对象：
+/// ```json
+/// {"type": "message", "message": {"role": "user", "content": [{"type": "text", "text": "..."}]}}
+/// ```
+fn load_session_messages(path: &str) -> std::result::Result<Vec<ChatMessage>, String> {
+    use crate::message::{ChatRole, ContentBlock, ToolCallInfo, ToolStatus};
+
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) => return Err(format!("读取文件失败: {}", e)),
+    };
+    let mut messages: Vec<ChatMessage> = Vec::new();
+
+    for (line_num, line) in content.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let val: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("第 {} 行 JSON 解析失败: {} — 跳过", line_num + 1, e);
+                continue;
+            }
+        };
+
+        // 只处理 type="message" 的行
+        if val.get("type").and_then(|v| v.as_str()) != Some("message") {
+            continue;
+        }
+
+        let msg = match val.get("message") {
+            Some(m) => m,
+            None => continue,
+        };
+
+        let role = msg
+            .get("role")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+
+        let chat_role = match role {
+            "user" => ChatRole::User,
+            "assistant" => ChatRole::Assistant,
+            "toolResult" => ChatRole::Tool,
+            "system" => ChatRole::System,
+            _ => continue,
+        };
+
+        let msg_id = msg
+            .get("id")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+        // 解析 content 内容块数组
+        let content_blocks: Vec<ContentBlock> = msg
+            .get("content")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|block| {
+                        let block_type = block.get("type").and_then(|v| v.as_str())?;
+                        match block_type {
+                            "text" => {
+                                let text = block.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                                Some(ContentBlock::Text {
+                                    text: text.to_string(),
+                                })
+                            }
+                            "thinking" => {
+                                let thinking =
+                                    block.get("thinking").and_then(|v| v.as_str()).unwrap_or("");
+                                Some(ContentBlock::Thinking {
+                                    thinking: thinking.to_string(),
+                                })
+                            }
+                            "toolCall" => {
+                                let id = block.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                                let name = block.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                                let arguments = block.get("arguments").cloned().unwrap_or_default();
+                                let result = block.get("result").cloned();
+                                let is_error = block
+                                    .get("is_error")
+                                    .and_then(|v| v.as_bool())
+                                    .unwrap_or(false);
+                                Some(ContentBlock::ToolCall {
+                                    id: id.to_string(),
+                                    name: name.to_string(),
+                                    arguments,
+                                    result,
+                                    is_error,
+                                })
+                            }
+                            _ => None,
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // 构建显示文本
+        let mut text = String::new();
+        let mut thinking: Option<String> = None;
+        let mut tool_call: Option<ToolCallInfo> = None;
+
+        match chat_role {
+            ChatRole::User => {
+                // 从第一个 text 块提取文本
+                text = content_blocks
+                    .iter()
+                    .find_map(|b| {
+                        if let ContentBlock::Text { text } = b {
+                            Some(text.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or_default();
+            }
+            ChatRole::Assistant => {
+                let mut parts: Vec<String> = Vec::new();
+                for block in &content_blocks {
+                    match block {
+                        ContentBlock::Text { text: t } => {
+                            parts.push(t.clone());
+                        }
+                        ContentBlock::Thinking { thinking: th } => {
+                            thinking = Some(th.clone());
+                        }
+                        ContentBlock::ToolCall {
+                            name,
+                            arguments: _,
+                            result: _,
+                            is_error: _,
+                            ..
+                        } => {
+                            parts.push(format!("[tool: {}]", name));
+                        }
+                        _ => {}
+                    }
+                }
+                text = parts.join("");
+            }
+            ChatRole::Tool => {
+                // toolResult — 查找 tool_call_id 和内容
+                let tool_use_id = msg
+                    .get("tool_use_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let tool_name = "tool".to_string();
+                let result_content = content_blocks
+                    .iter()
+                    .find_map(|b| {
+                        if let ContentBlock::Text { text: t } = b {
+                            Some(t.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or_default();
+
+                text = result_content.clone();
+                tool_call = Some(ToolCallInfo {
+                    tool_name,
+                    tool_call_id: tool_use_id.to_string(),
+                    status: ToolStatus::Done,
+                    args: serde_json::json!({}),
+                    result: Some(serde_json::json!({"content": result_content})),
+                    detail_text: String::new(),
+                });
+            }
+            _ => {}
+        }
+
+        let timestamp = msg.get("timestamp").and_then(|v| v.as_u64()).unwrap_or(0);
+
+        messages.push(ChatMessage {
+            id: msg_id,
+            content: if chat_role == ChatRole::Tool {
+                vec![]
+            } else {
+                content_blocks
+            },
+            agent_id: String::new(), // 由调用方在插入时设置
+            role: chat_role,
+            text,
+            thinking,
+            tool_call,
+            timestamp,
+            meta: None,
+        });
+    }
+
+    Ok(messages)
 }
 
 /// 使用 similar crate 计算统一 diff

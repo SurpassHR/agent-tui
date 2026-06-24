@@ -34,9 +34,19 @@ fn translate_pi_events(event: PiEvent, agent_id: &str) -> Vec<Action> {
         PiEvent::AutoRetryEnd { .. } => "AutoRetryEnd",
         PiEvent::ExtensionUiRequest { .. } => "ExtensionUiRequest",
     };
-    tracing::info!("PI_EVENT type={} (has_message={})",
+    tracing::info!(
+        "PI_EVENT type={} (has_message={})",
         event_type,
-        matches!(&event, PiEvent::MessageUpdate { message: Some(_), .. } | PiEvent::MessageEnd { message: Some(_), .. })
+        matches!(
+            &event,
+            PiEvent::MessageUpdate {
+                message: Some(_),
+                ..
+            } | PiEvent::MessageEnd {
+                message: Some(_),
+                ..
+            }
+        )
     );
     match &event {
         PiEvent::MessageUpdate {
