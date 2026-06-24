@@ -77,8 +77,6 @@ struct MarkdownRenderer<'a> {
     code_block_lang: String,
     /// 代码块行缓冲区
     code_block_lines: Vec<String>,
-    /// 代码块开始后的行号（用于在块内插入带样式的行）
-    code_block_start_line_index: usize,
     /// 是否处于引用块内部
     in_blockquote: bool,
     /// 当前 heading 级别（0 = 不在 heading 中）
@@ -115,7 +113,6 @@ impl<'a> MarkdownRenderer<'a> {
             in_code_block: false,
             code_block_lang: String::new(),
             code_block_lines: Vec::new(),
-            code_block_start_line_index: 0,
             in_blockquote: false,
             heading_level: 0,
             list_depth: 0,
@@ -138,19 +135,36 @@ impl<'a> MarkdownRenderer<'a> {
                 Event::Text(text) => self.on_text(&text),
                 Event::Code(code) => self.on_inline_code(&code),
                 Event::Html(html) => {
-                    // HTML 块：忽略或转义显示
-                    if !html.trim().is_empty() {
+                    if self.in_code_block {
+                        for line in html.lines() {
+                            self.code_block_lines.push(line.to_string());
+                        }
+                    } else if !html.trim().is_empty() {
                         self.buf.push_str(&html);
                     }
                 }
                 Event::InlineHtml(html) => {
-                    self.buf.push_str(&html);
+                    if self.in_code_block {
+                        self.code_block_lines.push(html.to_string());
+                    } else {
+                        self.buf.push_str(&html);
+                    }
                 }
                 Event::InlineMath(math) => {
-                    self.buf.push_str(&math);
+                    if self.in_code_block {
+                        self.code_block_lines.push(math.to_string());
+                    } else {
+                        self.buf.push_str(&math);
+                    }
                 }
                 Event::DisplayMath(math) => {
-                    self.buf.push_str(&math);
+                    if self.in_code_block {
+                        for line in math.lines() {
+                            self.code_block_lines.push(line.to_string());
+                        }
+                    } else {
+                        self.buf.push_str(&math);
+                    }
                 }
                 Event::SoftBreak => self.on_soft_break(),
                 Event::HardBreak => self.on_hard_break(),
@@ -210,7 +224,6 @@ impl<'a> MarkdownRenderer<'a> {
                     CodeBlockKind::Indented => String::new(),
                 };
                 self.code_block_lines.clear();
-                self.code_block_start_line_index = self.lines.len();
             }
             Tag::List(order) => {
                 self.list_depth += 1;
@@ -399,7 +412,11 @@ impl<'a> MarkdownRenderer<'a> {
 
     fn on_text(&mut self, text: &str) {
         if self.in_code_block {
-            self.code_block_lines.push(text.to_string());
+            // pulldown-cmark 0.12 + ENABLE_TABLES 将围栏代码块内容合并为单个
+            // Event::Text（内含 \n），需拆分为独立行以正确渲染多行代码块
+            for line in text.lines() {
+                self.code_block_lines.push(line.to_string());
+            }
             return;
         }
         if self.in_table {
@@ -523,15 +540,7 @@ impl<'a> MarkdownRenderer<'a> {
             .add_modifier(Modifier::DIM);
         let body_style = Style::default().bg(self.theme.code_bg);
 
-        // 顶部边框：┌─── lang ───
-        let top = if self.code_block_lang.is_empty() {
-            "┌───".to_string()
-        } else {
-            format!("┌── {} ──", self.code_block_lang)
-        };
-        self.lines.push(Line::from(Span::styled(top, border_style)));
-
-        // 代码行
+        // 先计算总宽度
         let num_width = if self.code_block_lines.len() > 99 {
             3
         } else if self.code_block_lines.len() > 9 {
@@ -539,25 +548,34 @@ impl<'a> MarkdownRenderer<'a> {
         } else {
             1
         };
-        let total_width = self
+        let content_max_w = self
             .code_block_lines
             .iter()
-            .map(|l| l.len())
+            .map(|l| unicode_width::UnicodeWidthStr::width(l.as_str()))
             .max()
-            .unwrap_or(0)
-            + num_width
-            + 4; // "│ " + 行号 + " │ " + 代码 + " │"
-        let total_width = total_width.max(20);
+            .unwrap_or(0);
+        // │ {num} │ {code_line}  │ — 固定框架 3 个 │ + 5 个空格 = 8 字符
+        let total_width = (content_max_w + num_width + 8).max(20);
+
+        // 顶部边框（总宽匹配 body）
+        let top = if self.code_block_lang.is_empty() {
+            format!("┌{}", "─".repeat(total_width.saturating_sub(1)))
+        } else {
+            let lang_tag = format!("── {} ──", self.code_block_lang);
+            let lang_w = unicode_width::UnicodeWidthStr::width(lang_tag.as_str());
+            let remaining = total_width.saturating_sub(lang_w + 1); // +1 for ┌
+            format!("┌{}{}", lang_tag, "─".repeat(remaining))
+        };
+        self.lines.push(Line::from(Span::styled(top, border_style)));
 
         for (i, code_line) in self.code_block_lines.iter().enumerate() {
             let num = format!("{:>width$}", i + 1, width = num_width);
-            let text = format!("│ {} │ {} │", num, code_line);
-            let padding = total_width.saturating_sub(text.len());
-            let padded = if padding > 0 {
-                format!("{}{}", text, " ".repeat(padding))
-            } else {
-                text
-            };
+            // 先构建不包含尾部 │ 的部分，计算已用宽度
+            let prefix_and_code = format!("│ {} │ {}", num, code_line);
+            let used = unicode_width::UnicodeWidthStr::width(prefix_and_code.as_str());
+            // 尾部 │ 固定在 total_width - 1 位置，中间用空格填充
+            let gap = total_width.saturating_sub(used + 1); // +1 给尾部 │
+            let padded = format!("{prefix_and_code}{}│", " ".repeat(gap));
             self.lines
                 .push(Line::from(Span::styled(padded, body_style)));
         }
@@ -888,5 +906,17 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn code_block_with_pipe_chars() {
+        // 管道符在代码块内不应被 ENABLE_TABLES 误解析为表格
+        let theme = Theme::cyan();
+        let input = "```rust\nlet f = |x| x + 1;\nlet g = |y| y * 2;\n```";
+        let lines = render(input, &theme);
+        let rendered = lines_to_text(&lines);
+        assert!(rendered.contains("let f"), "{rendered}");
+        assert!(rendered.contains("let g"), "{rendered}");
+        assert!(rendered.contains('|'), "pipe char preserved: {rendered}");
     }
 }

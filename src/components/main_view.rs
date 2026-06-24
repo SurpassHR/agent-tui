@@ -839,6 +839,31 @@ mod tests {
     }
 
     #[test]
+    fn test_render_message_code_block_multiline() {
+        // 直接测试 render_message 输出，验证多行代码块不被折叠为单行
+        let mut msg = ChatMessage::assistant("test", "");
+        msg.content = vec![crate::message::ContentBlock::Text {
+            text: "```\nlet x = 1;\nlet y = 2;\nlet z = 3;\n```".to_string(),
+        }];
+        let mv = MainView::default();
+        let theme = Theme::cyan();
+        let lines = MainView::render_message(&msg, &theme, &mv, 0);
+        let all_text: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect::<Vec<_>>()
+            .join("|");
+        assert!(
+            lines.len() > 3,
+            "code block should produce >3 lines, got {}: {all_text}",
+            lines.len()
+        );
+        assert!(all_text.contains("let x"), "missing line 1: {all_text}");
+        assert!(all_text.contains("let y"), "missing line 2: {all_text}");
+        assert!(all_text.contains("let z"), "missing line 3: {all_text}");
+    }
+
+    #[test]
     fn test_render_markdown_heading() {
         let mut mv = MainView::default();
         let mut msg = ChatMessage::assistant("test", "");
