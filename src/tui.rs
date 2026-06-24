@@ -164,7 +164,10 @@ fn translate_single_action(event: PiEvent, agent_id: &str) -> Option<Action> {
             })
         }
 
-        PiEvent::AutoRetryEnd { success, final_error } => {
+        PiEvent::AutoRetryEnd {
+            success,
+            final_error,
+        } => {
             let agent_id = agent_id.to_string();
             if success {
                 Some(Action::AutoRetryStatus {

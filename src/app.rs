@@ -196,6 +196,8 @@ pub struct TuiState {
     pub model_search: String,
     /// 标记用户刚在 MODEL 子区选择了模型，tui.rs 据此发送 RPC 给 pi
     pub model_just_switched: bool,
+    /// 当前按 Space 选中的 Provider 索引（None = 无 Provider 被选中）
+    pub active_provider_idx: Option<usize>,
     pub provider_editor: Option<ProviderEditor>,
     pub models_fetch_rx: Option<tokio::sync::oneshot::Receiver<Option<String>>>,
     /// skill 列表（从 skills/*/SKILL.md 解析）
@@ -391,6 +393,7 @@ impl TuiState {
             model_cursor: 0,
             model_search: String::new(),
             model_just_switched: false,
+            active_provider_idx: None,
             provider_popup: None,
             provider_editor: None,
             models_fetch_rx: None,
@@ -446,6 +449,7 @@ impl TuiState {
                 KeyCode::Enter => {
                     if let Some(p) = self.providers.get(popup_idx) {
                         if let Some(first) = p.models.first() {
+                            self.active_provider_idx = Some(popup_idx);
                             self.current_model = first.id.clone();
                             self.model_just_switched = true;
                         }
@@ -494,28 +498,44 @@ impl TuiState {
                     }
                     true
                 }
-                KeyCode::Char(' ') if !self.providers.is_empty() && self.provider_cursor < self.providers.len() => {
+                KeyCode::Char(' ')
+                    if !self.providers.is_empty()
+                        && self.provider_cursor < self.providers.len() =>
+                {
                     // Space → toggle：激活 / 取消激活
                     if let Some(p) = self.providers.get(self.provider_cursor) {
-                        let already_active = p.models.iter().any(|m| m.id == self.current_model);
+                        let already_active = self.active_provider_idx == Some(self.provider_cursor);
                         if already_active {
+                            self.active_provider_idx = None;
                             self.current_model.clear();
                         } else if let Some(first) = p.models.first() {
+                            self.active_provider_idx = Some(self.provider_cursor);
                             self.current_model = first.id.clone();
                         }
                         self.model_just_switched = true;
                     }
                     true
                 }
-                KeyCode::Char('e') if !self.providers.is_empty() && self.provider_cursor < self.providers.len() => {
+                KeyCode::Char('e')
+                    if !self.providers.is_empty()
+                        && self.provider_cursor < self.providers.len() =>
+                {
                     // e → 编辑 provider
                     self.open_edit_provider_editor(self.provider_cursor);
                     true
                 }
-                KeyCode::Char('d') if !self.providers.is_empty() && self.provider_cursor < self.providers.len() => {
+                KeyCode::Char('d')
+                    if !self.providers.is_empty()
+                        && self.provider_cursor < self.providers.len() =>
+                {
                     // d → 切换 provider enabled/disabled
                     if let Some(p) = self.providers.get_mut(self.provider_cursor) {
                         p.enabled = !p.enabled;
+                        // 禁用活跃 Provider 时清除选中状态
+                        if !p.enabled && self.active_provider_idx == Some(self.provider_cursor) {
+                            self.active_provider_idx = None;
+                            self.current_model.clear();
+                        }
                         let path = crate::provider::config_path();
                         let cfg = crate::provider::ProviderConfig {
                             port: self.router_port,
@@ -581,7 +601,15 @@ impl TuiState {
             KeyCode::Enter => {
                 let filtered = self.filtered_models();
                 if let Some(m) = filtered.get(self.model_cursor) {
-                    self.current_model = m.id.clone();
+                    let model_id = m.id.clone();
+                    // 找到该模型所属的 Provider 并设为活跃
+                    self.active_provider_idx = self
+                        .providers
+                        .iter()
+                        .enumerate()
+                        .find(|(_, p)| p.models.iter().any(|pm| pm.id == model_id))
+                        .map(|(i, _)| i);
+                    self.current_model = model_id;
                     self.model_just_switched = true;
                 }
                 true
@@ -621,8 +649,17 @@ impl TuiState {
     }
 
     /// 获取当前活跃 provider（用于 MODEL 子区显示模型列表）
-    /// 优先按 current_model 匹配，只考虑启用的 provider
+    /// 优先按 active_provider_idx 查找，其次按 current_model 匹配，只考虑启用的 provider
     pub fn active_provider_for_models(&self) -> Option<&crate::provider::ProviderInfo> {
+        // 优先使用按索引选中的 Provider
+        if let Some(idx) = self.active_provider_idx {
+            if let Some(p) = self.providers.get(idx) {
+                if p.enabled {
+                    return Some(p);
+                }
+            }
+        }
+        // 回退：按 current_model 匹配
         self.providers
             .iter()
             .filter(|p| p.enabled)
@@ -1180,21 +1217,15 @@ impl App {
                                         });
                                 } else {
                                     // ≤ 5 行：折叠时展开，已展开时无效果
-                                    let block_key =
-                                        format!("{}:{}", msg_id, block_index);
+                                    let block_key = format!("{}:{}", msg_id, block_index);
                                     let state = self
                                         .tui
                                         .main_view
                                         .block_states
                                         .entry(block_key)
-                                        .or_insert(
-                                            crate::message::BlockExpanded::Collapsed,
-                                        );
-                                    if *state
-                                        == crate::message::BlockExpanded::Collapsed
-                                    {
-                                        *state =
-                                            crate::message::BlockExpanded::Expanded;
+                                        .or_insert(crate::message::BlockExpanded::Collapsed);
+                                    if *state == crate::message::BlockExpanded::Collapsed {
+                                        *state = crate::message::BlockExpanded::Expanded;
                                     }
                                 }
                             }
@@ -1593,6 +1624,7 @@ impl App {
             .current_model
             .clone_from(&self.tui.current_model);
         self.tui.sidebar.port = self.tui.router_port;
+        self.tui.sidebar.active_provider_idx = self.tui.active_provider_idx;
         // Clamp provider_cursor to valid range（含 add provider 行）
         let max_provider = self.tui.providers.len();
         if self.tui.provider_cursor > max_provider {
@@ -2854,7 +2886,7 @@ mod tests {
             crate::provider::ProviderInfo {
                 id: "a".into(),
                 name: "A".into(),
-            enabled: true,
+                enabled: true,
                 bridge: false,
                 base_url: "".into(),
                 api_key: "".into(),
@@ -2863,7 +2895,7 @@ mod tests {
             crate::provider::ProviderInfo {
                 id: "b".into(),
                 name: "B".into(),
-            enabled: true,
+                enabled: true,
                 bridge: false,
                 base_url: "".into(),
                 api_key: "".into(),
@@ -2872,7 +2904,7 @@ mod tests {
             crate::provider::ProviderInfo {
                 id: "c".into(),
                 name: "C".into(),
-            enabled: true,
+                enabled: true,
                 bridge: false,
                 base_url: "".into(),
                 api_key: "".into(),

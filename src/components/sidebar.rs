@@ -52,6 +52,8 @@ pub struct Sidebar {
     pub model_scroll: usize,
     /// Provider Router 实际绑定的端口
     pub port: u16,
+    /// 当前选中的 Provider 索引（Space 切换控制）
+    pub active_provider_idx: Option<usize>,
 }
 
 /// 底部 provider 区最小行数（动态扩展）
@@ -275,7 +277,7 @@ impl Sidebar {
             }
         } else {
             for (i, p) in self.providers.iter().enumerate() {
-                let is_active = p.models.iter().any(|m| m.id == self.current_model);
+                let is_active = self.active_provider_idx == Some(i);
                 let is_provider_selected = is_on_providers && i == self.provider_cursor;
                 let (fg, bg) = if is_provider_selected {
                     (theme.selection_fg, theme.highlight_bg)
@@ -318,8 +320,8 @@ impl Sidebar {
         let active_provider = self
             .providers
             .iter()
-            .find(|p| p.models.iter().any(|m| m.id == self.current_model))
-            .or_else(|| self.providers.first());
+            .filter(|p| p.enabled)
+            .find(|p| p.models.iter().any(|m| m.id == self.current_model));
 
         if let Some(ap) = active_provider {
             lines.push(Line::from(vec![
@@ -358,9 +360,12 @@ impl Sidebar {
 
             // 过滤：只显示已开启 + 搜索匹配的模型
             let q = self.model_search.to_lowercase();
-            let filtered: Vec<&crate::provider::ModelInfo> = ap.models
+            let filtered: Vec<&crate::provider::ModelInfo> = ap
+                .models
                 .iter()
-                .filter(|m| m.enabled && (self.model_search.is_empty() || m.id.to_lowercase().contains(&q)))
+                .filter(|m| {
+                    m.enabled && (self.model_search.is_empty() || m.id.to_lowercase().contains(&q))
+                })
                 .collect();
 
             // 已推入的行数 = 前面所有行（分隔线 + PROVIDER + MODEL 标题 + 可能的搜索栏）
@@ -437,7 +442,7 @@ impl Component for Sidebar {
 
         // ── 计算各区域高度 ──
         let top_h = 3u16; // ACTIVE SESSION 标题 + 会话行 + 空行
-        // 统一用 14 行上限，footer 内容实际撑多高就是多高，不因子区切换跳动
+                          // 统一用 14 行上限，footer 内容实际撑多高就是多高，不因子区切换跳动
         const MAX_FOOTER: u16 = 14;
         let max_footer = MAX_FOOTER;
         let provisional = self.render_footer(inner.width, max_footer, theme);

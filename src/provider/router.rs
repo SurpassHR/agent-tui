@@ -85,7 +85,11 @@ async fn handle_chat_completions(
     tracing::info!(
         "收到 POST /v1/chat/completions | provider={} mode={}",
         provider.id,
-        if provider.bridge { "bridge" } else { "standard" }
+        if provider.bridge {
+            "bridge"
+        } else {
+            "standard"
+        }
     );
 
     if provider.bridge {
@@ -203,7 +207,10 @@ async fn standard_chat_proxy(
     let target = match target {
         Some(p) => p.clone(),
         None => {
-            tracing::warn!("POST /v1/chat/completions — model={} 未匹配到 provider", model);
+            tracing::warn!(
+                "POST /v1/chat/completions — model={} 未匹配到 provider",
+                model
+            );
             return (
                 StatusCode::NOT_FOUND,
                 format!("{{\"error\":\"unknown model: {}\"}}", model),
@@ -251,9 +258,8 @@ async fn standard_chat_proxy(
             let stream = resp.bytes_stream();
 
             // 流式转发
-            let body_stream = tokio_stream::StreamExt::map(stream, |chunk| {
-                chunk.map_err(std::io::Error::other)
-            });
+            let body_stream =
+                tokio_stream::StreamExt::map(stream, |chunk| chunk.map_err(std::io::Error::other));
 
             let streaming_body = axum::body::Body::from_stream(body_stream);
 
@@ -310,17 +316,12 @@ async fn proxy_request(client: &Client, target_url: &str, body: Body) -> Respons
     match req_builder.send().await {
         Ok(resp) => {
             let status = resp.status();
-            tracing::info!(
-                "POST {} — 上游响应 status={}",
-                target_url,
-                status.as_u16(),
-            );
+            tracing::info!("POST {} — 上游响应 status={}", target_url, status.as_u16(),);
             let headers = resp.headers().clone();
             let stream = resp.bytes_stream();
 
-            let body_stream = tokio_stream::StreamExt::map(stream, |chunk| {
-                chunk.map_err(std::io::Error::other)
-            });
+            let body_stream =
+                tokio_stream::StreamExt::map(stream, |chunk| chunk.map_err(std::io::Error::other));
 
             let mut response_headers = HeaderMap::new();
             for (key, value) in headers.iter() {

@@ -1,286 +1,355 @@
-# PROVIDER 区块侦察报告
+# 项目侦察报告 — agent-tui
 
-## 1. 项目整体结构
-
-```
-src/
-├── main.rs              # 入口 + --dry-run 配置输出（含 provider/model 信息）
-├── lib.rs               # 公共 API 库根，声明 pub mod provider
-├── app.rs               # App 状态机 + TuiState 数据模型（核心）
-├── tui.rs               # 事件循环（键盘/鼠标/剪贴板）、RPC 事件处理
-├── action.rs            # Action 枚举（全局通信骨架）
-├── config.rs            # 配置读取
-├── errors.rs            # 错误类型
-├── message.rs           # ChatMessage 消息模型
-├── selection.rs         # 鼠标拖拽选中逻辑
-├── theme.rs             # 主题色定义
-├── logging.rs           # 日志配置
-├── backend/             # Agent 后端（trait + RPC 实现）
-│   ├── mod.rs
-│   ├── rpc.rs
-│   ├── rpc_client.rs
-│   └── event.rs
-├── components/          # TUI 组件
-│   ├── mod.rs
-│   ├── sidebar.rs       # 左侧栏 — PROVIDER 区块在这里渲染
-│   ├── main_view.rs     # 中央对话区
-│   ├── agent_panel.rs   # 右侧 AGENTS 面板
-│   ├── bottom_bar.rs    # 底部状态栏
-│   ├── top_bar.rs       # 顶栏
-│   └── popup.rs         # 通用 Popup 浮层（Provider 详情弹窗不在这里）
-└── provider/            # Provider 路由系统
-    ├── mod.rs           # ProviderConfig / ProviderInfo / ModelInfo 数据模型
-    └── router.rs        # HTTP 路由器
-```
-
-## 2. PROVIDER 区块在哪里渲染？
-
-**文件：`src/components/sidebar.rs`**
-
-PROVIDER 区块在 `Sidebar::render_footer()` 方法中渲染（第 204–291 行）。
-
-### 渲染内容
-
-- 全宽分隔线
-- **PROVIDER 标题行** — `PROVIDER (N)` + 状态（`◈ :8001` / `◇ no providers` / `◇ offline`）
-- **Provider 列表**（如果有）— 每个显示 `◆/○ name (N models)`，bridge 额外显示 🔗
-- **空状态**（providers 为空时）— 显示一行 `◆ [+] add provider`（聚焦时）/ `○ [+] add provider`（未聚焦）
-- **提示行**（聚焦时）— `  + add provider  [Space]`
-- 分隔线
-- **MODEL 区块** — 跟随 active provider 显示模型列表
-
-### 同步机制
-
-在 `app.rs` 的 `sync_components()` 中（第 792 行）：
-```rust
-self.tui.sidebar.providers.clone_from(&self.tui.providers);
-self.tui.sidebar.router_running = self.tui.router_running;
-self.tui.sidebar.current_model.clone_from(&self.tui.current_model);
-```
-
-## 3. "add provider" 交互在哪里定义？
-
-**`handle_provider_key` 方法 — `src/app.rs` 第 283 行**
-
-### 添加 provider 的键位：`+` 键
-
-```rust
-// src/app.rs:357
-KeyCode::Char('+') => {
-    if !self.selecting_model {
-        // 创建一个默认的 ProviderInfo 并 push 到 providers 列表
-        let default = crate::provider::ProviderInfo { ... };
-        self.providers.push(default);
-        // 立即保存到 providers.json
-        let path = crate::provider::config_path();
-        let cfg = crate::provider::ProviderConfig { ... };
-        crate::provider::ProviderConfig::save(&path, &cfg);
-    }
-    true
-}
-```
-
-### 界面上的提示不准确
-
-sidebar 渲染的提示文字是 `"+ add provider [Space]"`，但实际代码中 **Space 键在 Provider 子区根本不处理**——Space 只在 Workspace 子区（第 512 行）处理，用于切换工作区展开/折叠。用户按 Space 不会触发任何操作。
-
-实际有效的键是 **`+` 键**。
-
-## 4. 回车键（Enter）事件处理链路
-
-### 事件路由路径
-
-```
-crossterm Event::Key(Enter)
-    → tui.rs 事件循环（第 460+ 行）
-    → 检查 focus 和 sidebar_subsection
-
-    ┌──────────────────────────────────────────────────────────────┐
-    │ 条件：focus == Sidebar && subsection == Provider             │
-    │ ⇒ app.tui.handle_provider_key(key.code);                   │
-    └──────────────────────────────────────────────────────────────┘
-    → app.rs handle_provider_key()（第 283 行）
-
-```
-
-### handle_provider_key 中 Enter 的处理（两个分支）
-
-**分支 1 — Popup 已打开时（`provider_popup = Some(idx)`）：**
-```rust
-KeyCode::Enter => {
-    // 激活所选 provider 的第一个模型
-    if let Some(p) = self.providers.get(popup_idx) {
-        if let Some(first) = p.models.first() {
-            self.current_model = first.id.clone();
-        }
-    }
-    self.provider_popup = None;  // 关闭 popup
-    true
-}
-```
-
-**分支 2 — Popup 未打开时（正常导航）：**
-```rust
-KeyCode::Enter => {
-    if self.selecting_model {
-        // 在模型列表中：选择模型 + 打开 provider popup
-        if let Some(p) = self.providers.get(self.provider_cursor) {
-            if let Some(m) = p.models.get(self.model_cursor) {
-                self.current_model = m.id.clone();
-                self.provider_popup = Some(self.provider_cursor);
-            }
-        }
-    } else if !self.providers.is_empty() {
-        // 在 provider 列表中：打开 provider 详情 popup
-        self.provider_popup = Some(self.provider_cursor);
-    }
-    true
-}
-```
-
-### Enter 不能触发弹窗的场景
-
-**场景 A：providers 列表为空**
-- 分支 2 的条件 `!self.providers.is_empty()` 为 false
-- Enter 被设为 true（已消费），但什么都不做
-- 用户看到的 UI 显示 "add provider" 提示，但 Enter 没有反应
-
-**场景 B：选中的 provider 没有 models**
-- 分支 1 中 `if let Some(first) = p.models.first()` 为 None
-- `current_model` 不会变，popup 关闭
-- 用户看到弹出又立刻消失或没反应
-
-**场景 C：键盘焦点不在 Provider 子区**
-- `tui.rs` 第 542-544 行的条件不匹配
-- Enter 会被其他子区处理或忽略
-
-## 5. Provider 详情弹窗
-
-### 定义位置
-
-**`src/app.rs` 第 879–917 行**，在 `App::render()` 方法中最后渲染。
-
-这不是用 `popup.rs` 组件，而是直接内联渲染：
-```rust
-if let Some(idx) = self.tui.provider_popup {
-    // ...
-    let popup_area = crate::components::popup::centered_rect(65, 55, f.area());
-    f.render_widget(Clear, popup_area);
-    let block = Block::default()
-        .title(format!(" {} {} ", ...))
-        .borders(Borders::ALL)
-        .border_style(theme.border);
-    // 显示 provider ID、Base URL、模式、模型列表
-    // 提示: [Esc] close  [Enter] activate
-}
-```
-
-### 关闭逻辑
-
-- **Esc 键**：`tui.rs` 第 492 行 — `provider_popup = None`
-- **Enter 键**：`handle_provider_key` 第 293 行 — 激活模型 + `provider_popup = None`
-
-### `popup.rs` 通用组件
-
-`src/components/popup.rs` — 是另一个独立的通用浮层（Popup struct），用于消息详情等场景（由 `Action::TogglePopup` 控制），**不是** Provider 详情弹窗。
-
-### `provider_popup` 数据模型
-
-```rust
-// src/app.rs:187
-pub provider_popup: Option<usize>,
-// None = 关闭, Some(idx) = 显示第 idx 个 provider 的详情
-```
-
-初始化值：`None`
-
-## 6. 焦点和子区导航
-
-### 面板切换
-- `Alt+←/→` — 在 Sidebar / MainView / AgentPanel 三面板间循环
-
-### 子区切换（Sidebar 内）
-- `Alt+↑/↓` — 在 ActiveSession ↔ Workspace ↔ Provider 三子区间循环
-
-### Provider 子区内的键位
-
-| 键 | 效果 |
-|---|---|
-| `↑/↓` | 移动 provider/model 光标 |
-| `→` | 进入 model 选择模式（展开模型的子列表） |
-| `←` / `Esc` | 退出 model 选择模式 |
-| `Enter` | 打开 provider 详情弹窗（或有 model 时激活 model） |
-| `+` | 添加默认 provider（立即保存到 providers.json） |
-| **Space** | **无效**（UI 提示说可用，但代码中该键只在 Workspace 子区处理） |
-
-## 7. 关键发现总结
-
-| # | 发现 | 文件 | 严重性 |
-|---|---|---|---|
-| 1 | UI 提示 `[Space]` 但 Space 键在 Provider 子区未被处理 | `sidebar.rs:280` 渲染文本 vs `tui.rs` 事件分发 | ⚠️ 中等 — 误导用户 |
-| 2 | providers 为空时按 Enter 无反应（`handle_provider_key` 分支不处理空列表） | `app.rs:344-346` | ⚠️ 中等 — 用户期待弹窗但无响应 |
-| 3 | Provider 详情弹窗直接内联在 `App::render()` 中，未复用 `Popup` 组件 | `app.rs:879-917` | ℹ️ 信息 |
-| 4 | "add provider" 实际靠 `+` 键，UI 文本写的是 Space | `app.rs:357` vs `sidebar.rs:280` | ⚠️ 中等 — 文档/实现不一致 |
-| 5 | 添加 provider 后自动保存到 `providers.json`，但添加入口缺少确认弹窗 | `app.rs:357-375` | ℹ️ 信息 |
-
-[建议升级到其他更高级 agent] — 如果需要修复 Enter 无法弹出配置弹窗的问题，或对齐 UI 提示与实际键位，建议升级到 T2 或 T3 agent 进行实现。
+> 日期: 2026-06-24
+> 目标: 深入理解消息模型、渲染流程、Action 通信、PiEvent 事件流和当前功能边界
 
 ---
 
-## Acceptance Report
+## 1. 消息模型 — `src/message.rs`
 
-```acceptance-report
-{
-  "criteriaSatisfied": [
-    {
-      "id": "criterion-1",
-      "status": "satisfied",
-      "evidence": "Returned concrete findings with file paths (sidebar.rs, app.rs, tui.rs, popup.rs) and severity levels. All 5 findings have explicit file paths and line numbers."
-    }
-  ],
-  "changedFiles": [
-    "/home/hr/Projects/agent-tui/context.md"
-  ],
-  "testsAddedOrUpdated": [],
-  "commandsRun": [
-    {
-      "command": "ls /home/hr/Projects/agent-tui/src/",
-      "result": "passed",
-      "summary": "Listed src directory structure"
-    },
-    {
-      "command": "grep -i 'provider' src/ -r",
-      "result": "passed",
-      "summary": "Found all provider-related code locations"
-    },
-    {
-      "command": "grep 'provider_popup' src/ -r",
-      "result": "passed",
-      "summary": "Found all provider_popup references"
-    },
-    {
-      "command": "grep 'handle_provider_key' src/ -r",
-      "result": "passed",
-      "summary": "Found handle_provider_key definition and all call sites"
-    },
-    {
-      "command": "grep 'SidebarSubsection' src/ -r",
-      "result": "passed",
-      "summary": "Found SidebarSubsection enum and usage"
-    },
-    {
-      "command": "grep 'Char.*space' src/ -r",
-      "result": "passed",
-      "summary": "Found Space key handling code"
-    }
-  ],
-  "validationOutput": [],
-  "residualRisks": [
-    "Space key UI hint mismatch might confuse users trying to add providers",
-    "Empty provider list + Enter does nothing — no feedback to user",
-    "Provider popup rendering is inline in app.rs (879-917), not using the reusable popup.rs component — potential duplication of popup logic"
-  ],
-  "noStagedFiles": true,
-  "notes": "context.md 已写入项目根目录。包含完整的 PROVIDER 区块侦察结果，涵盖渲染位置、键盘事件、弹窗逻辑、5 项具体发现及严重性评估。"
+### 1.1 ChatRole（角色枚举）
+
+| Variant | 说明 |
+|---------|------|
+| `User` | 用户发送的消息 |
+| `Assistant` | 助手（pi）的回复 |
+| `Tool` | 工具执行结果 |
+| `System` | 系统状态消息 |
+| `Error` | 错误消息 |
+
+### 1.2 ChatMessage（结构化消息单元）
+
+```rust
+pub struct ChatMessage {
+    pub id: String,          // UUID v4 唯一标识
+    pub agent_id: String,    // 所属 agent ID
+    pub role: ChatRole,      // 角色
+    pub text: String,        // 文本内容
+    pub thinking: Option<String>,       // 模型思考过程 ✅ 已有
+    pub tool_call: Option<ToolCallInfo>, // 工具调用信息 ✅ 已有
+    pub timestamp: u64,                 // 毫秒时间戳
+    pub meta: Option<HashMap<String, Value>>, // 额外元数据
 }
 ```
+
+**关键发现**: 已有 `thinking` 和 `tool_call` 字段。`ToolCallInfo` 包含 `tool_name`, `tool_call_id`, `status`(Running/Done/Error), `args`, `result`, `detail_text`。
+
+### 1.3 ContentBlock（内容块枚举，用于序列化）
+
+```rust
+pub enum ContentBlock {
+    Text { text: String },
+    Thinking { thinking: String },
+    ToolCall { id: String, name: String, arguments: Value },
+    Image { data: String, mime_type: String }, // 预留，TUI 暂不支持
+}
+```
+
+### 1.4 ToolStatus
+
+```rust
+pub enum ToolStatus {
+    Running,  // 执行中
+    Done,     // 已完成
+    Error,    // 出错
+}
+```
+
+### 1.5 工厂方法
+
+- `ChatMessage::user(agent_id, text)`
+- `ChatMessage::assistant(agent_id, text)`
+- `ChatMessage::tool(agent_id, tool_call)` — 自动生成文本如 "✓ read"/"✗ read"
+- `ChatMessage::system(agent_id, text)`
+- `ChatMessage::error(agent_id, text)`
+
+**结论**: 消息模型已有 thinking 和 tool_call。**没有"折叠/展开"相关的状态字段**（如 `collapsed: bool`）。
+
+---
+
+## 2. 主视图渲染逻辑 — `src/components/main_view.rs`
+
+### 2.1 MainView 状态结构
+
+```rust
+pub struct MainView {
+    pub messages: Vec<ChatMessage>,   // 消息列表
+    pub scroll_offset: usize,         // 滚动偏移
+    pub input_buffer: String,         // 输入缓冲区
+    pub show_thinking: bool,          // 是否显示思考过程
+    pub has_focus: bool,              // 输入框是否获得焦点
+    pub subsection: MainViewSubsection, // Messages 或 Input
+    pub message_cursor: usize,        // 消息光标索引
+    pub scroll_mode: ScrollMode,      // TailFollow 或 Pinned
+    pub selection: SelectionState,    // 选区状态
+}
+```
+
+### 2.2 消息渲染（render_message 方法）
+
+每个 `ChatRole` 有不同的渲染样式：
+
+- **User**: `" 你 "` (橙色粗体) → `" ─"` 分隔线 → 逐行文本
+- **Assistant**: `" pi "` (橙色粗体) → `" ─"` 分隔线 → thinking 预览(取前3行, 灰色斜体) → 消息文本
+- **Tool**: `icon + tool_name` (如 `✓ read` / `▶ read` / `✗ read`)，灰色
+- **System**: 灰色斜体文本
+- **Error**: `" ⚠ "` + 橙色文本
+
+**ANSI 支持**: **不支持 ANSI 解析**。所有文本直接用 `fg(theme.text)` 纯色渲染。原阶段三的 `ansi::parse_to_lines` 已被替换为纯文本方案。
+
+**选中高亮**: 当 `is_selected == true` 时（消息光标所在 + Messages 子区有焦点），整条消息应用 `bg(theme.highlight_bg)` 背景。
+
+### 2.3 布局 (render 方法)
+
+```
+┌─────────────────────────────────────────┐
+│ 消息区域 (msg_area)                     │
+│  你                                      │
+│  ─                                       │
+│  hello                                   │
+│                                         │
+│  pi                                      │
+│  ─                                       │
+│   [思考] I need to...                    │
+│   Hi!                                    │
+│                                         │
+│  ✓ read                                  │
+├─────────────────────────────────────────┤
+│ ───── 分割线 (sep_area) ──────────────  │
+├─────────────────────────────────────────┤
+│ > 输入框 (input_area)                   │
+└─────────────────────────────────────────┘
+```
+
+### 2.4 滚动
+
+- **TailFollow**（默认）: 始终显示最新消息，`start = all_lines.len() - msg_area_height`
+- **Pinned**: 将消息光标所在行固定在视窗上 1/3 处
+
+**局限性**: 没有基于行的手动滚动（PageUp/PageDown），没有无限历史回溯。
+
+---
+
+## 3. 输入框 — MainView 底部输入区
+
+### 3.1 当前状态
+
+```rust
+// MainView 字段
+pub input_buffer: String,   // 缓存用户输入的字符串
+pub subsection: MainViewSubsection, // Input 或 Messages
+pub has_focus: bool,
+```
+
+### 3.2 渲染 (render_input_inner)
+
+- 无焦点时: `> █ 输入你的问题...`（灰色占位符）
+- 有焦点时: `> Hello█`（橙色 >，白色文本，█ 光标）
+- 光标字符是硬编码的 `"█"`，不是真正的终端 cursor
+
+### 3.3 键盘处理 (tui.rs 中)
+
+位于 `FocusPanel::MainView + MainViewSubsection::Input` 时：
+
+| 按键 | 行为 |
+|------|------|
+| `↑` | 切换到 Messages 子区 |
+| 字符键 | `input_buffer.push(c)` |
+| Backspace | `input_buffer.pop()` |
+| Enter | 发送输入 → `Action::UserSubmitInput` + RPC `{"type":"prompt","message":...}` |
+
+### 3.4 缺少的功能
+
+- ❌ **无 `/command` 支持** — 输入框是纯文本，没有命令解析
+- ❌ **无 `@file` 补全** — 没有文件路径自动补全逻辑
+- ❌ **无历史记录** — 没有 ↑ 键回看历史输入
+
+---
+
+## 4. 中央对话区渲染流程
+
+### 4.1 完整渲染流程
+
+```
+tui.rs 主循环 (每 50ms tick)
+  │
+  ├─ 从 PiRpcClient.event_rx 读取事件
+  │   └─ translate_pi_event() → Action
+  │       └─ app.handle_action(action)
+  │           ├─ Action::MessageAppend → append_to_last_assistant()
+  │           ├─ Action::ThinkingAppend → append_to_last_assistant_thinking()
+  │           ├─ Action::ThinkingFinalize → finalize_thinking()
+  │           ├─ Action::ToolEvent → 创建/更新 Tool ChatMessage
+  │           └─ Action::UserSubmitInput → 创建 User ChatMessage
+  │
+  ├─ 同步 input_buffer 到 main_view
+  │
+  └─ terminal.try_draw(|f| app.render_tui(f))
+       └─ main_view.render(f, area, theme)
+            ├─ render_empty() — 无消息时
+            └─ render() — 有消息时
+                 ├─ 遍历 messages → render_message() 生成 Lines
+                 ├─ 滚动裁剪 (TailFollow/Pinned)
+                 ├─ selection::apply_selection() 应用选区高亮
+                 ├─ 渲染消息 Paragraph
+                 ├─ 渲染分割线 ─────
+                 └─ 渲染输入框
+```
+
+### 4.2 消息数据流
+
+```
+pi agent → stdout JSONL → PiRpcClient.event_rx (tokio channel)
+         → tui.rs event loop → translate_pi_event() → Action enum
+         → app.handle_action() → App.messages HashMap<String, Vec<ChatMessage>>
+         → sync_messages_to_main_view() → MainView.messages
+         → render() → ratatui Lines → 终端
+```
+
+**App.messages** 是按 agent_id 分组的 HashMap: `HashMap<String, Vec<ChatMessage>>`，每次修改后 `sync_messages_to_main_view` 会把当前 active_agent 的消息列表 clone 到 `MainView.messages`。
+
+### 4.3 滚动局限
+
+- 只支持 TailFollow（尾部跟随）和 Pinned（固定到光标）两种模式
+- 没有基于行的 PageUp/PageDown 手动滚动
+- 没有 scrollbar 指示器
+
+---
+
+## 5. Action 枚举 — `src/action.rs`
+
+### 5.1 完整 Action 列表
+
+| Action Variant | 分类 | 说明 |
+|---|---|---|
+| `PtyStdout(String)` | PTY（已废弃） | 子进程标准输出 |
+| `PtyExit` | PTY（已废弃） | 子进程退出 |
+| `UserSubmitInput(String)` | 用户交互 | 用户提交输入 |
+| `MessageAppend{agent_id, text}` | RPC 事件 | 流式追加助手文本 |
+| `MessageFinalize{agent_id}` | RPC 事件 | 消息定型完成 |
+| `ThinkingAppend{agent_id, text}` | RPC 事件 | 流式追加思考过程 |
+| `ThinkingFinalize{agent_id, text}` | RPC 事件 | 思考过程完成 |
+| `ToolEvent{agent_id, tool_name, tool_call_id, status, args, result, is_error}` | RPC 事件 | 工具执行事件 |
+| `AgentStatusChange{agent_id, status}` | RPC 事件 | Agent 状态变更 |
+| `RuntimeStateUpdate(AgentRuntimeState)` | RPC 事件 | 运行时状态更新 |
+| `AgentMessagesLoaded{agent_id, messages}` | RPC 事件 | 历史消息加载 |
+| `AutoRetryStatus{agent_id, text}` | RPC 事件 | 自动重试状态 |
+| `TogglePopup` | UI 控制 | 切换浮窗显示 |
+| `SwitchSession(String)` | UI 控制 | 切换左侧会话 |
+| `ToggleWorkspace(usize)` | 侧边栏 | 展开/折叠工作区 |
+| `SelectSession(String)` | 侧边栏 | 选择会话 |
+| `SidebarMove(i32)` | 侧边栏 | 焦点移动 |
+| `CycleFocusPanel(i32)` | 面板 | 面板焦点循环 |
+| `CycleFocusSubsection(i32)` | 面板 | 子区焦点切换 |
+
+### 5.2 关键发现
+
+- **无消息折叠/展开 Action** — 没有类似 `ToggleMessageCollapse` 或 `ToggleThinking` 的 Action
+- **无消息编辑/删除 Action** — 不支持编辑或删除已发送的消息
+- **无重新生成/重试 Action** — 没有重新生成助手回复的 Action
+- **`MessageFinalize` 目前是空操作** — handle_action 不执行任何操作
+- PTY Action (`PtyStdout`, `PtyExit`, `Intercepted*`, `UpdateTokenUsage`) 都标记为 `#[deprecated]`，计划迁移到 RPC 事件
+
+---
+
+## 6. 最近 Git Log（最近 20 条）
+
+```
+c8b161e fix(provider): fix pi local provider routing and add request diagnostics
+e111532 fix(main): 绑定 LogGuard 防止日志丢失
+779bf89 feat(logging): add file logging with JSON daily rolling rotation
+dcd5a83 feat(tui): 切换模型时通过 RPC 同步到 pi agent
+3645a21 fix(sidebar): MODEL 子区搜索/滚动/禁显，统一 footer 高度防跳动
+0e1bd0a refactor(sidebar): MODEL 拆分为独立子区，支持 Alt+↑/↓ 切换
+b1d9769 fix(provider): 使用动态端口替代硬编码 8001，统一缩进为 2 空格
+2746f94 feat(provider): 统一编辑/查看表单、模型管理、自动拉取
+6b3b920 fix: 提取 handle_provider_key 并添加 TDD 测试修复 Enter popup 和空列表保护
+8cc73fa fix: 重构 provider popup 处理，用 if-else 替代 continue
+7a7f1ba fix: 增加 Enter 打开 popup 的 tracing 日志便于调试
+0e97cce fix: 空 PROVIDER 时显示 ◆ [+] add provider 高亮选中项
+6fc7b92 fix: 对齐 AGENTS 高亮模式，使用 vec![Span] + Style(fg+bg)
+37c1e62 fix: 无配置时显示 [+] add provider 提示，provider_cursor 自动钳位
+b7da7d5 fix: 修复 PROVIDER 区块三个问题
+2622655 feat: 添加 provider 入口提示和 + 键添加 provider
+a3c21bf feat: Provider 详情 Popup + 键盘交互
+796b427 feat: 实现 Provider 路由系统
+b13e52f docs: 新增 Bridge 桥接模式，cc-switch 等本地代理纯透传
+e3ad6a2 docs: PROVIDER 区块替换左侧栏 MODEL 区块
+```
+
+**近期改动方向**: Provider 路由系统（最近 10 条 commit 主要集中在 provider 侧边栏和模型切换），日志系统，小 bug 修复。**没有消息展示/滚动/折叠相关的改动**。
+
+---
+
+## 7. PiEvent 枚举 — `src/backend/event.rs`
+
+### 7.1 完整 PiEvent 列表
+
+| PiEvent Variant | 触发条件 | 翻译为 Action |
+|---|---|---|
+| `AgentStart` | agent 开始处理 | `AgentStatusChange(Running)` |
+| `AgentEnd{stop_reason, error, will_retry}` | agent 结束处理 | `AgentStatusChange(Idle)` |
+| `MessageStart{role}` | 新消息开始 | 未翻译 |
+| `MessageUpdate{assistant_event, delta, message}` | 消息内容更新 | 见下表 |
+| `MessageEnd{message}` | 消息结束定型 | `MessageFinalize` |
+| `ToolExecutionStart{tool_name, tool_call_id, args}` | 工具调用开始 | `ToolEvent(Running)` |
+| `ToolExecutionUpdate{tool_name, tool_call_id, partial_result}` | 工具执行进度更新 | 未翻译（忽略） |
+| `ToolExecutionEnd{tool_name, tool_call_id, result, is_error}` | 工具调用结束 | `ToolEvent(Done/Error)` |
+| `ExtensionError{error}` | 扩展错误 | `AutoRetryStatus` |
+| `AutoRetryStart{attempt, max_attempts, delay_ms, error_message}` | 自动重试开始 | 未翻译 |
+| `AutoRetryEnd{success, final_error}` | 自动重试结束 | 未翻译 |
+| `ExtensionUiRequest{id, method, params}` | 扩展 UI 请求 | 未翻译 |
+
+### 7.2 AssistantEventType（MessageUpdate 的子事件类型）
+
+| 类型 | 翻译为 Action |
+|---|---|
+| `TextDelta` | `MessageAppend` |
+| `ThinkingDelta` | `ThinkingAppend` |
+| `ThinkingEnd` | `ThinkingFinalize` |
+| `MessageEnd` | `MessageFinalize` |
+| `Done` | `MessageFinalize` |
+| `TextStart`, `Error`, `MessageStart` | 忽略（None） |
+
+### 7.3 关键发现
+
+- **thinking 事件已完整支持**: `ThinkingDelta` → `ThinkingAppend`, `ThinkingEnd` → `ThinkingFinalize` ✅
+- **tool_call 事件已完整支持**: `ToolExecutionStart/Update/End` → `ToolEvent` ✅
+- **`ToolExecutionUpdate` 被忽略**: 进度更新事件(`partialResult`)未传递给 UI，这是设计选择还是遗漏待确认
+- **`AutoRetryStart/End` 被忽略**: 用户看不到自动重试的进度和结果
+- **`MessageStart` 被忽略**: 新消息开始时没有任何 UI 反馈
+- **`MessageEnd` 的 `message` 字段未使用**: 包含完整的 `MessageData` (含 ContentBlock 列表)，但 translate_pi_event 只发了 `MessageFinalize` 空信号
+
+### 7.4 PiEvent 序列化约定
+
+- `serde(tag = "type", rename_all = "snake_case")`
+- 事件类型使用 snake_case: `agent_start`, `agent_end`, `message_update`, `tool_execution_start`, `extension_error`
+- `response` 类型由 `PiRpcClient` 的 pending 机制处理，不进入事件流
+- `AssistantMessageEvent` 使用 `serde(rename_all = "snake_case")`: `text_delta`, `thinking_delta`, `thinking_end`, `message_end`
+
+---
+
+## 阶段四亮点汇总
+
+### ✅ 已实现的
+- 结构化 ChatMessage 模型（含 thinking + tool_call）
+- 流式打字机效果（MessageAppend / ThinkingAppend）
+- 思考过程暂存和定型（ThinkingFinalize）
+- 工具执行状态追踪（Running/Done/Error）
+- RPC 事件 → Action → handle_action 完整链路
+- 消息列表 TailFollow + Pinned 两种滚动模式
+- 鼠标拖拽选中 + 系统剪贴板写入
+- 三条布局：侧边栏(40) | 主视图(flex) | Agent面板(40)
+- Provider 路由系统 + 模型切换 RPC 同步
+- 文件日志轮转
+
+### ❌ 未实现的
+- 消息折叠/展开功能（thinking 可折叠显示前 3 行硬编码）
+- 消息手动滚动（PageUp/PageDown）
+- `/command` 支持
+- `@file` 自动补全
+- 消息编辑/删除/重新生成
+- ANSI 解析渲染
+- Talkback / Popup 消息详情查看（Enter 弹窗展示消息文本，但功能很基础）
+- 键盘输入 → PTY 子进程（阶段四补）
+- 多 agent 同时运行（阶段五补）

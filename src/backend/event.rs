@@ -356,8 +356,13 @@ mod tests {
         });
         let event = parse_pi_event(&raw).unwrap();
         match event {
-            Some(PiEvent::MessageUpdate { assistant_event, .. }) => {
-                assert_eq!(assistant_event.event_type, AssistantEventType::ToolCallStart);
+            Some(PiEvent::MessageUpdate {
+                assistant_event, ..
+            }) => {
+                assert_eq!(
+                    assistant_event.event_type,
+                    AssistantEventType::ToolCallStart
+                );
             }
             other => panic!("expected MessageUpdate, got {:?}", other),
         }
@@ -373,8 +378,13 @@ mod tests {
         });
         let event = parse_pi_event(&raw).unwrap();
         match event {
-            Some(PiEvent::MessageUpdate { assistant_event, .. }) => {
-                assert_eq!(assistant_event.event_type, AssistantEventType::ThinkingStart);
+            Some(PiEvent::MessageUpdate {
+                assistant_event, ..
+            }) => {
+                assert_eq!(
+                    assistant_event.event_type,
+                    AssistantEventType::ThinkingStart
+                );
             }
             other => panic!("expected MessageUpdate, got {:?}", other),
         }
