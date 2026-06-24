@@ -1608,7 +1608,22 @@ impl App {
                         tracing::error!("创建工作区目录失败: {} — {}", ws_dir.display(), e);
                         self.tui.bottom_bar.status = format!("创建失败: {}", e);
                     } else {
-                        self.populate_workspaces();
+                        // 直接插入新工作区（新目录尚无 JSONL，populate_workspaces 会跳过）
+                        let display_name = p
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_else(|| path.clone());
+                        let new_ws = WorkspaceNode {
+                            cwd: path.clone(),
+                            display_name,
+                            sessions: Vec::new(),
+                            expanded: true,
+                        };
+                        self.tui.workspaces.push(new_ws);
+                        compute_display_names(&mut self.tui.workspaces);
+                        self.tui
+                            .workspaces
+                            .sort_by(|a, b| a.display_name.cmp(&b.display_name));
                         self.sync_components();
                         self.tui.bottom_bar.status = format!("已添加工作区: {}", path);
                     }
