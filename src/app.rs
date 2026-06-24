@@ -180,6 +180,8 @@ pub struct TuiState {
     pub subagents: Vec<SubAgentInfo>,
     /// HTTP Router 运行状态
     pub router_running: bool,
+    /// HTTP Router 实际绑定的端口
+    pub router_port: u16,
     /// Provider 配置
     pub providers: Vec<crate::provider::ProviderInfo>,
     /// 当前选中模型
@@ -379,6 +381,7 @@ impl TuiState {
             mcps: Vec::new(),
             mcp_cursor: 0,
             router_running: false,
+            router_port: 8001,
             providers: Vec::new(),
             current_model: String::new(),
             provider_cursor: 0,
@@ -547,7 +550,7 @@ impl TuiState {
                         self.providers.push(default);
                         let path = crate::provider::config_path();
                         let cfg = crate::provider::ProviderConfig {
-                            port: 8001,
+                            port: self.router_port,
                             current_model: Some(self.current_model.clone()),
                             providers: self.providers.clone(),
                         };
@@ -608,7 +611,7 @@ impl TuiState {
                 }
                 let path = crate::provider::config_path();
                 let cfg = crate::provider::ProviderConfig {
-                    port: 8001,
+                    port: self.router_port,
                     current_model: Some(self.current_model.clone()),
                     providers: self.providers.clone(),
                 };
@@ -790,7 +793,7 @@ impl TuiState {
                     }
                     let path = crate::provider::config_path();
                     let cfg = crate::provider::ProviderConfig {
-                        port: 8001,
+                        port: self.router_port,
                         current_model: Some(self.current_model.clone()),
                         providers: self.providers.clone(),
                     };
@@ -1317,6 +1320,7 @@ impl App {
             .sidebar
             .current_model
             .clone_from(&self.tui.current_model);
+        self.tui.sidebar.port = self.tui.router_port;
         // Clamp provider_cursor to valid range（含 add provider 行）
         let max_provider = self.tui.providers.len();
         if self.tui.provider_cursor > max_provider {

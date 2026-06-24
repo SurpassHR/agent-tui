@@ -47,6 +47,8 @@ pub struct Sidebar {
     pub provider_cursor: usize,
     pub model_cursor: usize,
     pub selecting_model: bool,
+    /// Provider Router 实际绑定的端口
+    pub port: u16,
 }
 
 /// 底部 provider 区最小行数（动态扩展）
@@ -222,7 +224,7 @@ impl Sidebar {
 
         // ── PROVIDER 区块 ──
         let status = if self.router_running && !self.providers.is_empty() {
-            format!(" ◈ :8001")
+            format!(" ◈ :{}", self.port)
         } else if self.router_running {
             " ◇ no providers".to_string()
         } else {
@@ -259,12 +261,12 @@ impl Sidebar {
             // Empty state: first item is "add provider" action
             if is_on_providers {
                 lines.push(
-                    Line::from(Span::from(" ◆ [+] add provider").fg(theme.selection_fg))
+                    Line::from(Span::from("  ◆ [+] add provider").fg(theme.selection_fg))
                         .style(ratatui::style::Style::default().bg(theme.highlight_bg)),
                 );
             } else {
                 lines.push(Line::from(
-                    Span::from(" ○ [+] add provider").fg(theme.text_dim),
+                    Span::from("  ○ [+] add provider").fg(theme.text_dim),
                 ));
             }
         } else {
@@ -284,9 +286,9 @@ impl Sidebar {
                 };
                 let cnt = p.models.len();
                 let mut text = if is_active {
-                    format!("◆ {}  ({} models)", p.name, cnt)
+                    format!("  ◆ {}  ({} models)", p.name, cnt)
                 } else {
-                    format!("○ {}  ({} models)", p.name, cnt)
+                    format!("  ○ {}  ({} models)", p.name, cnt)
                 };
                 if p.bridge {
                     text.push_str(" 🔗");
@@ -304,7 +306,7 @@ impl Sidebar {
                 (theme.text_dim, theme.bg, "○")
             };
             lines.push(
-                Line::from(Span::from(format!(" {} [+] add provider", prefix)))
+                Line::from(Span::from(format!("  {} [+] add provider", prefix)))
                     .style(ratatui::style::Style::default().fg(fg).bg(bg)),
             );
         }

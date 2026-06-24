@@ -235,6 +235,7 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
         if let Some(ref m) = provider_cfg.current_model {
             app.tui.current_model.clone_from(m);
         }
+        let initial_port = provider_cfg.port;
         let shared = crate::provider::SharedConfig::new(tokio::sync::RwLock::new(provider_cfg));
 
         // 生成 local-provider.ts
@@ -264,16 +265,28 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                 .sum::<usize>()
         );
 
-        // 启动 axum router
+        // 启动 axum router（通过 oneshot 传回实际绑定的端口）
         let router_shared = shared.clone();
+        let (port_tx, mut port_rx) = tokio::sync::oneshot::channel::<u16>();
         app.tui.router_running = true;
         tokio::spawn(async move {
-            if let Err(e) = crate::provider::router::start_router(router_shared).await {
-                tracing::error!("Provider router failed: {}", e);
+            match crate::provider::router::start_router(router_shared).await {
+                Ok(actual_port) => {
+                    tracing::info!("Provider router started on port {}", actual_port);
+                    let _ = port_tx.send(actual_port);
+                }
+                Err(e) => {
+                    tracing::error!("Provider router failed: {}", e);
+                }
             }
         });
         // 给 axum 一点时间绑定端口
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        // 获取实际端口（超时后 fallback 到配置中的初始端口）
+        app.tui.router_port = match port_rx.try_recv() {
+            Ok(p) => p,
+            _ => initial_port,
+        };
     }
 
     let agent_id = app.active_agent.clone().unwrap_or_default();

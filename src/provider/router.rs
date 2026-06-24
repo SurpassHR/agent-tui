@@ -20,8 +20,8 @@ struct AppState {
     http: Client,
 }
 
-/// 启动 axum HTTP 服务器
-pub async fn start_router(config: SharedConfig) -> Result<(), crate::errors::Error> {
+/// 启动 axum HTTP 服务器，返回实际绑定的端口
+pub async fn start_router(config: SharedConfig) -> Result<u16, crate::errors::Error> {
     let port = {
         let cfg = config.read().await;
         cfg.port
@@ -49,7 +49,7 @@ pub async fn start_router(config: SharedConfig) -> Result<(), crate::errors::Err
                 axum::serve(listener, app)
                     .await
                     .map_err(|e| crate::errors::Error::Config(format!("axum serve: {}", e)))?;
-                return Ok(());
+                return Ok(try_port);
             }
             Err(_e) if try_port < port + 10 => {
                 tracing::warn!("Port :{} busy, trying :{}", try_port, try_port + 1);
