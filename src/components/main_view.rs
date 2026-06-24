@@ -4,6 +4,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
+use super::markdown;
 use super::Component;
 use crate::app::{MainViewSubsection, ScrollMode, SelectionState};
 use crate::message::{ChatMessage, ChatRole, ToolStatus};
@@ -121,13 +122,11 @@ impl MainView {
                 lines.push(Line::from(vec![" 你 ".to_string().fg(theme.accent).bold()]));
                 // 分隔线和内容
                 lines.push(Line::from(vec![" ─".to_string().fg(theme.text_dim)]));
-                for text_line in message.text.lines() {
-                    let prefix = Span::from(" ").style(Style::default().fg(theme.text));
-                    let mut spans = vec![prefix];
-                    spans.extend(crate::parse_ansi_spans(
-                        text_line,
-                        Style::default().fg(theme.text),
-                    ));
+                let clean = crate::strip_ansi(&message.text);
+                let md_lines = markdown::render(&clean, theme);
+                for md_line in md_lines {
+                    let mut spans = vec![Span::from(" ")];
+                    spans.extend(md_line.spans.into_iter());
                     lines.push(Line::from(spans));
                 }
                 lines.push(Line::from(""));
@@ -149,13 +148,11 @@ impl MainView {
                                 .add_modifier(Modifier::DIM)]));
                         }
                     }
-                    for text_line in message.text.lines() {
-                        let prefix = Span::from(" ").style(Style::default().fg(theme.text));
-                        let mut spans = vec![prefix];
-                        spans.extend(crate::parse_ansi_spans(
-                            text_line,
-                            Style::default().fg(theme.text),
-                        ));
+                    let clean = crate::strip_ansi(&message.text);
+                    let md_lines = markdown::render(&clean, theme);
+                    for md_line in md_lines {
+                        let mut spans = vec![Span::from(" ")];
+                        spans.extend(md_line.spans.into_iter());
                         lines.push(Line::from(spans));
                     }
                     lines.push(Line::from(""));
@@ -220,13 +217,11 @@ impl MainView {
                             }
                         },
                         crate::message::ContentBlock::Text { text } => {
-                            for text_line in text.lines() {
-                                let prefix = Span::from(" ").style(Style::default().fg(theme.text));
-                                let mut spans = vec![prefix];
-                                spans.extend(crate::parse_ansi_spans(
-                                    text_line,
-                                    Style::default().fg(theme.text),
-                                ));
+                            let clean = crate::strip_ansi(text);
+                            let md_lines = markdown::render(&clean, theme);
+                            for md_line in md_lines {
+                                let mut spans = vec![Span::from(" ")];
+                                spans.extend(md_line.spans.into_iter());
                                 lines.push(Line::from(spans));
                             }
                         }
@@ -335,24 +330,22 @@ impl MainView {
             }
 
             ChatRole::System => {
-                let base = Style::default()
-                    .fg(theme.text_dim)
-                    .add_modifier(Modifier::DIM);
-                for text_line in message.text.lines() {
-                    let prefix = Span::from(" ").style(base);
-                    let mut spans = vec![prefix];
-                    spans.extend(crate::parse_ansi_spans(text_line, base));
+                let clean = crate::strip_ansi(&message.text);
+                let md_lines = markdown::render(&clean, theme);
+                for md_line in md_lines {
+                    let mut spans = vec![Span::from(" ")];
+                    spans.extend(md_line.spans.into_iter());
                     lines.push(Line::from(spans));
                 }
                 lines.push(Line::from(""));
             }
 
             ChatRole::Error => {
-                let base = Style::default().fg(theme.accent);
-                for text_line in message.text.lines() {
-                    let prefix = Span::from(" ⚠ ").style(base);
-                    let mut spans = vec![prefix];
-                    spans.extend(crate::parse_ansi_spans(text_line, base));
+                let clean = crate::strip_ansi(&message.text);
+                let md_lines = markdown::render(&clean, theme);
+                for md_line in md_lines {
+                    let mut spans = vec![Span::from(" ⚠ ")];
+                    spans.extend(md_line.spans.into_iter());
                     lines.push(Line::from(spans));
                 }
                 lines.push(Line::from(""));
@@ -577,12 +570,11 @@ impl MainView {
         let header = format!("┌─ {} ─", title);
         lines.push(Line::from(vec![header.fg(theme.text_dim)]));
 
-        // 跳过 scroll 行
-        let base = Style::default().fg(theme.text);
-        for text_line in content.lines() {
-            let prefix = Span::from(" ").style(base);
-            let mut spans = vec![prefix];
-            spans.extend(crate::parse_ansi_spans(text_line, base));
+        let clean = crate::strip_ansi(content);
+        let md_lines = markdown::render(&clean, theme);
+        for md_line in md_lines {
+            let mut spans = vec![Span::from(" ")];
+            spans.extend(md_line.spans.into_iter());
             lines.push(Line::from(spans));
         }
 
