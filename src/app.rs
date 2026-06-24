@@ -193,6 +193,7 @@ pub struct TuiState {
     pub provider_popup: Option<usize>,
     /// 模型列表中光标位置
     pub model_cursor: usize,
+    pub model_search: String,
     pub provider_editor: Option<ProviderEditor>,
     pub models_fetch_rx: Option<tokio::sync::oneshot::Receiver<Option<String>>>,
     /// skill 列表（从 skills/*/SKILL.md 解析）
@@ -386,6 +387,7 @@ impl TuiState {
             current_model: String::new(),
             provider_cursor: 0,
             model_cursor: 0,
+            model_search: String::new(),
             provider_popup: None,
             provider_editor: None,
             models_fetch_rx: None,
@@ -521,7 +523,7 @@ impl TuiState {
         }
     }
 
-    /// 处理 MODEL 子区键盘事件
+    /// 处理 MODEL 子区键盘事件（支持搜索过滤 + 滚动）
     pub fn handle_model_key(&mut self, key: crossterm::event::KeyCode) -> bool {
         if self.provider_editor.is_some() {
             return false;
@@ -534,36 +536,58 @@ impl TuiState {
                 true
             }
             KeyCode::Down => {
-                let active_provider = self.active_provider_for_models();
-                if let Some(ap) = active_provider {
-                    if self.model_cursor + 1 < ap.models.len() {
-                        self.model_cursor += 1;
-                    }
+                let filtered = self.filtered_models();
+                if self.model_cursor + 1 < filtered.len() {
+                    self.model_cursor += 1;
                 }
                 true
             }
             KeyCode::Enter => {
-                let active_provider = self.active_provider_for_models();
-                if let Some(ap) = active_provider {
-                    if let Some(m) = ap.models.get(self.model_cursor) {
-                        self.current_model = m.id.clone();
-                    }
+                let filtered = self.filtered_models();
+                if let Some(m) = filtered.get(self.model_cursor) {
+                    self.current_model = m.id.clone();
                 }
+                true
+            }
+            KeyCode::Backspace => {
+                self.model_search.pop();
+                self.model_cursor = 0;
+                true
+            }
+            KeyCode::Esc => {
+                self.model_search.clear();
+                self.model_cursor = 0;
+                true
+            }
+            KeyCode::Char(c) if c != ' ' => {
+                self.model_search.push(c);
+                self.model_cursor = 0;
                 true
             }
             _ => false,
         }
     }
 
+    /// 返回已开启 + 搜索匹配的模型列表
+    pub fn filtered_models(&self) -> Vec<&crate::provider::ModelInfo> {
+        let ap = match self.active_provider_for_models() {
+            Some(p) => p,
+            None => return vec![],
+        };
+        let q = self.model_search.to_lowercase();
+        ap.models
+            .iter()
+            .filter(|m| m.enabled && (self.model_search.is_empty() || m.id.to_lowercase().contains(&q)))
+            .collect()
+    }
+
     /// 获取当前活跃 provider（用于 MODEL 子区显示模型列表）
-    fn active_provider_for_models(&self) -> Option<&crate::provider::ProviderInfo> {
-        if self.current_model.is_empty() {
-            self.providers.first()
-        } else {
-            self.providers
-                .iter()
-                .find(|p| p.models.iter().any(|m| m.id == self.current_model))
-        }
+    /// 优先按 current_model 匹配，匹配失败时回退到第一个 provider
+    pub fn active_provider_for_models(&self) -> Option<&crate::provider::ProviderInfo> {
+        self.providers
+            .iter()
+            .find(|p| p.models.iter().any(|m| m.id == self.current_model))
+            .or_else(|| self.providers.first())
     }
 
     fn handle_provider_editor_key(&mut self, key: crossterm::event::KeyCode) -> bool {
@@ -605,8 +629,7 @@ impl TuiState {
                 }
                 let editor = self.provider_editor.take().unwrap();
                 let idx = editor.index;
-                let mut draft = editor.draft;
-                draft.models.retain(|m| m.enabled);
+                let draft = editor.draft;
                 if editor.is_new {
                     self.providers.push(draft);
                 } else if idx < self.providers.len() {
@@ -787,8 +810,7 @@ impl TuiState {
                     editor.model_mgr = None;
                     let taken = self.provider_editor.take().unwrap();
                     let idx = taken.index;
-                    let mut draft = taken.draft;
-                    draft.models.retain(|m| m.enabled);
+                    let draft = taken.draft;
                     if taken.is_new {
                         self.providers.push(draft);
                     } else if idx < self.providers.len() {
@@ -1332,6 +1354,7 @@ impl App {
         }
         self.tui.sidebar.provider_cursor = self.tui.provider_cursor;
         self.tui.sidebar.model_cursor = self.tui.model_cursor;
+        self.tui.sidebar.model_search.clone_from(&self.tui.model_search);
         self.tui.sidebar.message_count = self
             .active_agent
             .as_ref()

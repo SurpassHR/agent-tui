@@ -46,6 +46,10 @@ pub struct Sidebar {
     pub current_model: String,
     pub provider_cursor: usize,
     pub model_cursor: usize,
+    /// MODEL 子区搜索文本
+    pub model_search: String,
+    /// MODEL 子区滚动偏移
+    pub model_scroll: usize,
     /// Provider Router 实际绑定的端口
     pub port: u16,
 }
@@ -211,7 +215,7 @@ impl Sidebar {
     }
 
     /// 底部 Provider + MODEL 区块 — PROVIDER 在上，MODEL 跟随切换
-    fn render_footer(&self, width: u16, theme: &Theme) -> Vec<Line<'static>> {
+    fn render_footer(&self, width: u16, footer_height: u16, theme: &Theme) -> Vec<Line<'static>> {
         let sep = "─".repeat(width.saturating_sub(1).max(1) as usize);
         let mut lines: Vec<Line<'static>> = Vec::new();
         let focused_on_providers = self.has_focus && self.subsection == SidebarSubsection::Provider;
@@ -271,11 +275,8 @@ impl Sidebar {
             }
         } else {
             for (i, p) in self.providers.iter().enumerate() {
-                let is_active = if self.current_model.is_empty() {
-                    i == 0
-                } else {
-                    p.models.iter().any(|m| m.id == self.current_model)
-                };
+                let is_active = p.models.iter().any(|m| m.id == self.current_model)
+                    || (self.current_model.is_empty() && i == 0);
                 let is_provider_selected = is_on_providers && i == self.provider_cursor;
                 let (fg, bg) = if is_provider_selected {
                     (theme.selection_fg, theme.highlight_bg)
@@ -311,14 +312,12 @@ impl Sidebar {
             );
         }
 
-        // ── MODEL 区块（独立跟随 active provider） ──
-        let active_provider = if self.current_model.is_empty() {
-            self.providers.first()
-        } else {
-            self.providers
-                .iter()
-                .find(|p| p.models.iter().any(|m| m.id == self.current_model))
-        };
+        // ── MODEL 区块（独立跟随 active provider，支持搜索过滤 + 滚动） ──
+        let active_provider = self
+            .providers
+            .iter()
+            .find(|p| p.models.iter().any(|m| m.id == self.current_model))
+            .or_else(|| self.providers.first());
 
         if let Some(ap) = active_provider {
             lines.push(Line::from(vec![
@@ -348,9 +347,45 @@ impl Sidebar {
             };
             lines.push(m_title);
 
-            for (mi, m) in ap.models.iter().enumerate() {
+            // 搜索栏（非空时显示）
+            if !self.model_search.is_empty() {
+                lines.push(Line::from(
+                    Span::from(format!("  🔍 {}", self.model_search)).fg(theme.accent),
+                ));
+            }
+
+            // 过滤：只显示已开启 + 搜索匹配的模型
+            let q = self.model_search.to_lowercase();
+            let filtered: Vec<&crate::provider::ModelInfo> = ap.models
+                .iter()
+                .filter(|m| m.enabled && (self.model_search.is_empty() || m.id.to_lowercase().contains(&q)))
+                .collect();
+
+            // 已推入的行数 = 前面所有行（分隔线 + PROVIDER + MODEL 标题 + 可能的搜索栏）
+            let pushed = lines.len();
+            // 可用行数（保留一行给底栏之外的部分）
+            let available = (footer_height as usize).saturating_sub(pushed);
+
+            // 计算 scroll 偏移使 cursor 可见
+            let mut scroll = self.model_scroll;
+            let cursor = self.model_cursor.min(filtered.len().saturating_sub(1));
+            if filtered.len() > available {
+                if cursor < scroll {
+                    scroll = cursor;
+                } else if cursor >= scroll + available {
+                    scroll = cursor.saturating_add(1).saturating_sub(available);
+                }
+            } else {
+                scroll = 0;
+            }
+
+            // 取可见范围
+            let visible: Vec<&&crate::provider::ModelInfo> =
+                filtered.iter().skip(scroll).take(available).collect();
+
+            for (vi, m) in visible.iter().enumerate() {
                 let is_model_active = self.current_model == m.id;
-                let is_model_selected = is_on_models && mi == self.model_cursor;
+                let is_model_selected = is_on_models && (scroll + vi) == self.model_cursor;
                 let (mf, mb) = if is_model_selected {
                     (theme.selection_fg, theme.highlight_bg)
                 } else if is_model_active {
@@ -400,22 +435,24 @@ impl Component for Sidebar {
 
         // ── 计算各区域高度 ──
         let top_h = 3u16; // ACTIVE SESSION 标题 + 会话行 + 空行
-        let footer_h = FOOTER_LINES;
-        let mid_h = inner.height.saturating_sub(top_h + footer_h).max(1);
-
-        // 如果终端太矮，优先保留 top 和 mid
-        let actual_footer_h = if inner.height < top_h + footer_h {
-            inner.height.saturating_sub(top_h).min(footer_h)
+        // 统一用 14 行上限，footer 内容实际撑多高就是多高，不因子区切换跳动
+        const MAX_FOOTER: u16 = 14;
+        let max_footer = MAX_FOOTER;
+        let provisional = self.render_footer(inner.width, max_footer, theme);
+        let footer_content_h = (provisional.len() as u16).clamp(FOOTER_LINES, max_footer);
+        let footer_h = if inner.height < top_h + FOOTER_LINES {
+            inner.height.saturating_sub(top_h).min(FOOTER_LINES)
         } else {
-            footer_h
+            footer_content_h.min(inner.height.saturating_sub(top_h + 1))
         };
+        let mid_h = inner.height.saturating_sub(top_h + footer_h).max(1);
 
         let sections = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 ratatui::layout::Constraint::Length(top_h),
                 ratatui::layout::Constraint::Length(mid_h),
-                ratatui::layout::Constraint::Length(actual_footer_h),
+                ratatui::layout::Constraint::Length(footer_h),
             ])
             .split(inner);
 
@@ -486,13 +523,11 @@ impl Component for Sidebar {
             .alignment(Alignment::Left);
         f.render_widget(ws_para, sections[1]);
 
-        // ── 底部：模型 + Token（固定，不随工作区滚动） ──
-        let footer_lines = self.render_footer(sections[2].width, theme);
-        let visible_footer: Vec<Line<'static>> = footer_lines
+        // ── 底部：模型 + Token（使用预渲染内容，精确匹配高度） ──
+        let mut footer_lines: Vec<Line<'static>> = provisional
             .into_iter()
             .take(sections[2].height as usize)
             .collect();
-        let mut footer_lines = visible_footer;
         selection::apply_selection(&mut footer_lines, sections[2], &mut self.selection, theme);
 
         let footer_para = Paragraph::new(footer_lines)
