@@ -490,8 +490,7 @@ impl TuiState {
                             model_mgr: None,
                         });
                     } else if !self.providers.is_empty() {
-                        // Enter → 打开 provider 详情 popup（不进入编辑）
-                        self.provider_popup = Some(self.provider_cursor);
+                        self.open_edit_provider_editor(self.provider_cursor);
                     }
                     true
                 }
@@ -2764,13 +2763,16 @@ mod tests {
 
         state.handle_provider_key(crossterm::event::KeyCode::Enter);
 
-        // Enter 现在打开 popup（不直接进入编辑）
-        assert!(
-            state.provider_popup.is_some(),
-            "Enter 应该打开 Provider 详情 popup"
+        let editor = state
+            .provider_editor
+            .as_ref()
+            .expect("Enter 应该打开 Provider 编辑表单");
+        assert!(!editor.is_new, "编辑已有 provider 时 is_new 应为 false");
+        assert_eq!(
+            editor.draft.id, "deepseek",
+            "编辑表单应预填充 provider 数据"
         );
-        assert_eq!(state.provider_popup, Some(0));
-        assert!(state.provider_editor.is_none(), "不应同时打开编辑器");
+        assert_eq!(state.provider_popup, None, "不应同时打开 popup");
     }
 
     #[test]
