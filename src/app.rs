@@ -495,12 +495,15 @@ impl TuiState {
                     true
                 }
                 KeyCode::Char(' ') if !self.providers.is_empty() && self.provider_cursor < self.providers.len() => {
-                    // Space → 直接激活 provider（切换到第一个模型）
+                    // Space → toggle：激活 / 取消激活
                     if let Some(p) = self.providers.get(self.provider_cursor) {
-                        if let Some(first) = p.models.first() {
+                        let already_active = p.models.iter().any(|m| m.id == self.current_model);
+                        if already_active {
+                            self.current_model.clear();
+                        } else if let Some(first) = p.models.first() {
                             self.current_model = first.id.clone();
-                            self.model_just_switched = true;
                         }
+                        self.model_just_switched = true;
                     }
                     true
                 }
