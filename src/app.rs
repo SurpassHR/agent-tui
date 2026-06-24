@@ -1468,6 +1468,8 @@ impl App {
             Action::ToggleWorkspace(index) => {
                 if let Some(ws) = self.tui.workspaces.get_mut(index) {
                     ws.expanded = !ws.expanded;
+                    // 保存 UI 状态到 state.json
+                    crate::persistence::save(&self.build_persist_state());
                 }
             }
 

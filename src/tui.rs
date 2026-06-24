@@ -462,6 +462,8 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
 
     // 扫描 session 目录，填充工作区数据
     app.populate_workspaces();
+    // 恢复持久化的 UI 状态（工作区展开 + 活跃会话）
+    app.restore_persisted_state();
     // 扫描 agents 目录，填充 subagent 列表
     app.populate_subagents();
     // 扫描 skills 目录，填充 skill 列表
@@ -1432,6 +1434,9 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
             }
         }
     }
+
+    // 最终保存 UI 状态
+    crate::persistence::save(&app.build_persist_state());
 
     tracing::debug!("TUI 主循环结束");
     backend.stop().await.ok();
