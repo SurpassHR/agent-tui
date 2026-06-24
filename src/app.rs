@@ -2811,10 +2811,19 @@ impl App {
     ///
     /// 从每个目录下的第一个 JSONL 文件提取 `cwd` 字段作为工作区标识，
     /// 无 JSONL 或无法提取 cwd 的目录不显示。同名末端目录自动加父级区分。
+    /// 已有工作区的展开状态在重建时保留。
     pub fn populate_workspaces(&mut self) {
         let sessions_dir = pi_sessions_dir();
         let mut ws_map: std::collections::HashMap<String, WorkspaceNode> =
             std::collections::HashMap::new();
+
+        // 保存当前工作区的展开状态（按 cwd 索引）
+        let old_expanded: std::collections::HashMap<String, bool> = self
+            .tui
+            .workspaces
+            .iter()
+            .map(|ws| (ws.cwd.clone(), ws.expanded))
+            .collect();
 
         if let Ok(entries) = std::fs::read_dir(&sessions_dir) {
             for entry in entries.flatten() {
@@ -2883,7 +2892,8 @@ impl App {
                             cwd: cwd.clone(),
                             display_name: String::new(), // 稍后计算
                             sessions,
-                            expanded: ws_map.is_empty(), // 第一个默认展开
+                            // 已有工作区保留原展开状态，新工作区默认展开
+                            expanded: *old_expanded.get(&cwd).unwrap_or(&true),
                         },
                     );
                 }
