@@ -652,7 +652,9 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
 
                         // Esc: 退出详情视图 / 关闭 Popup / 编辑表单
                         crossterm::event::KeyCode::Esc => {
-                            if app.tui.main_view.entered_view.is_some() {
+                            if app.tui.main_view.completion_popup.is_some() {
+                                app.tui.main_view.completion_popup = None;
+                            } else if app.tui.main_view.entered_view.is_some() {
                                 app.handle_action(Action::ExitBlock).await.ok();
                             } else if app.tui.provider_editor.is_some() {
                                 let has_mgr = app
@@ -887,28 +889,97 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                                     app.tui.main_view_subsection =
                                         crate::app::MainViewSubsection::Messages;
                                 }
-                                crossterm::event::KeyCode::Char(c) => {
-                                    input_buffer.push(c);
+                                // / 触发命令补全（仅输入框为空时）
+                                crossterm::event::KeyCode::Char('/')
+                                    if input_buffer.is_empty() =>
+                                {
+                                    input_buffer.push('/');
+                                    app.tui.main_view.completion_popup = Some(
+                                        crate::message::CompletionPopup {
+                                            items: vec![
+                                                crate::message::CompletionItem {
+                                                    label: "skill-creator".into(),
+                                                    value: "/skill:skill-creator ".into(),
+                                                    prefix: "⚡".into(),
+                                                },
+                                                crate::message::CompletionItem {
+                                                    label: "skill-finder".into(),
+                                                    value: "/skill:skill-finder ".into(),
+                                                    prefix: "⚡".into(),
+                                                },
+                                            ],
+                                            cursor: 0,
+                                            trigger: '/',
+                                            filter: String::new(),
+                                        },
+                                    );
                                 }
+                                // @ 触发文件补全
+                                crossterm::event::KeyCode::Char('@') => {
+                                    input_buffer.push('@');
+                                    app.tui.main_view.completion_popup = Some(
+                                        crate::message::CompletionPopup {
+                                            items: vec![
+                                                crate::message::CompletionItem {
+                                                    label: "src/main.rs".into(),
+                                                    value: "@src/main.rs ".into(),
+                                                    prefix: "📁".into(),
+                                                },
+                                            ],
+                                            cursor: 0,
+                                            trigger: '@',
+                                            filter: String::new(),
+                                        },
+                                    );
+                                }
+                                // Tab: 补全 popup 下移
+                                crossterm::event::KeyCode::Tab
+                                    if app.tui.main_view.completion_popup.is_some() =>
+                                {
+                                    if let Some(ref mut popup) =
+                                        app.tui.main_view.completion_popup
+                                    {
+                                        if popup.cursor + 1 < popup.items.len() {
+                                            popup.cursor += 1;
+                                        }
+                                    }
+                                }
+                                // Enter: 补全 popup 选中 / 发送消息
+                                crossterm::event::KeyCode::Enter => {
+                                    if let Some(popup) =
+                                        app.tui.main_view.completion_popup.take()
+                                    {
+                                        if let Some(item) = popup.items.get(popup.cursor) {
+                                            input_buffer = item.value.clone();
+                                        }
+                                    } else {
+                                        let trimmed = input_buffer.trim().to_string();
+                                        if !trimmed.is_empty() {
+                                            input_buffer.clear();
+                                            app.handle_action(Action::UserSubmitInput(
+                                                trimmed.clone(),
+                                            ))
+                                            .await
+                                            .ok();
+                                            let _ = client
+                                                .notify(serde_json::json!({
+                                                    "type": "prompt",
+                                                    "message": trimmed,
+                                                }))
+                                                .await;
+                                        }
+                                    }
+                                }
+                                // Backspace: 删除字符，清空时关闭 popup
                                 crossterm::event::KeyCode::Backspace => {
                                     input_buffer.pop();
-                                }
-                                crossterm::event::KeyCode::Enter => {
-                                    let trimmed = input_buffer.trim().to_string();
-                                    if !trimmed.is_empty() {
-                                        input_buffer.clear();
-                                        app.handle_action(Action::UserSubmitInput(
-                                            trimmed.clone(),
-                                        ))
-                                        .await
-                                        .ok();
-                                        let _ = client
-                                            .notify(serde_json::json!({
-                                                "type": "prompt",
-                                                "message": trimmed,
-                                            }))
-                                            .await;
+                                    if input_buffer.is_empty() {
+                                        app.tui.main_view.completion_popup = None;
                                     }
+                                }
+                                // 通用字符输入
+                                crossterm::event::KeyCode::Char(c) => {
+                                    input_buffer.push(c);
                                 }
                                 _ => {}
                             }

@@ -97,6 +97,9 @@ impl MainView {
             sep_area,
         );
 
+        // 补全 popup（在输入框上方）
+        self.render_completion_popup(f, input_area, theme);
+
         // 输入框
         let input_line = self.render_input_inner(theme);
         f.render_widget(Paragraph::new(input_line), input_area);
@@ -387,6 +390,9 @@ impl Component for MainView {
             sep_area,
         );
 
+        // 补全 popup（在输入框上方）
+        self.render_completion_popup(f, input_area, theme);
+
         // 输入框
         let input_line = self.render_input_inner(theme);
         f.render_widget(Paragraph::new(input_line), input_area);
@@ -534,6 +540,42 @@ impl MainView {
             .style(Style::default().bg(theme.bg))
             .wrap(Wrap { trim: false });
         f.render_widget(paragraph, inner);
+    }
+
+    /// 渲染补全 popup（在输入框上方）
+    fn render_completion_popup(&self, f: &mut Frame, input_area: Rect, theme: &Theme) {
+        if let Some(ref popup) = self.completion_popup {
+            let popup_height = (popup.items.len().min(8) + 2) as u16;
+            let popup_width = popup
+                .items
+                .iter()
+                .map(|i| i.label.len() + 4)
+                .max()
+                .unwrap_or(20)
+                .min(input_area.width as usize) as u16;
+            let popup_area = Rect::new(
+                input_area.x,
+                input_area.y.saturating_sub(popup_height),
+                popup_width,
+                popup_height,
+            );
+            let mut popup_lines: Vec<Line> = Vec::new();
+            for (i, item) in popup.items.iter().enumerate().take(8) {
+                let prefix = if i == popup.cursor { "▶" } else { " " };
+                let text = format!("{} {} {}", prefix, item.prefix, item.label);
+                if i == popup.cursor {
+                    popup_lines.push(Line::from(vec![text.bg(theme.highlight_bg)]));
+                } else {
+                    popup_lines.push(Line::from(vec![text.fg(theme.text_dim)]));
+                }
+            }
+            f.render_widget(
+                Paragraph::new(popup_lines)
+                    .style(Style::default().bg(theme.bg))
+                    .block(Block::default().borders(Borders::NONE)),
+                popup_area,
+            );
+        }
     }
 
     /// 构建底部输入框内容行
