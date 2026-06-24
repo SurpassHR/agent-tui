@@ -54,6 +54,7 @@ meta-tui/
 │   ├── lib.rs               # 库根
 │   ├── action.rs            # Action 枚举
 │   ├── app.rs               # App 状态机 + TuiState
+│   ├── persistence.rs        # UI 状态持久化（state.json）
 │   ├── tui.rs               # TUI 事件循环（RPC + 鼠标/键盘）
 │   ├── selection.rs         # 鼠标选中高亮 + 文本收集
 │   ├── config.rs            # CLI 参数解析

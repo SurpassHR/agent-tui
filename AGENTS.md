@@ -53,6 +53,7 @@ cargo fmt --check                                     # 格式检查
 - `src/main.rs` — 薄入口（<50 行）+ `--dry-run` 配置输出
 - `src/action.rs` — Action 枚举（全局通信骨架）
 - `src/app.rs` — App 状态机（持有 `TuiState`），包含 WorkspaceNode/SessionNode/SubAgentInfo 数据模型
+- `src/persistence.rs` — UI 状态持久化（工作区展开 + 活跃会话 → state.json）
 - `src/tui.rs` — TUI 渲染循环 + RPC 事件处理 + 鼠标/键盘事件 + 剪贴板
 - `src/selection.rs` — 鼠标拖拽选中高亮和文本收集
 - `src/theme.rs` — 主题色定义
@@ -62,7 +63,7 @@ cargo fmt --check                                     # 格式检查
   - `rpc_client.rs` — JSONL RPC 协议客户端
   - `event.rs` — PiEvent 枚举 + 解析
 - `src/components/` — UI 组件
-  - `sidebar.rs` — 左侧栏（三区布局：顶部 ACTIVE SESSION / 中部工作区树 / 底部 PROVIDER + MODEL）
+  - `sidebar.rs` — 左侧栏（ACTIVE SESSION / WORKSPACE 树 a/d/r 增删改 / PROVIDER + MODEL）
   - `main_view.rs` — 中央对话区 + 底部输入框 + 块折叠/进入视图
   - `markdown.rs` — Markdown → Ratatui Line 渲染器（GFM 表格 + 围栏代码块 + ANSI）
   - `agent_panel.rs` — 右侧栏（AGENTS / SKILLS / MCPS / TASKS 四区块）
@@ -133,6 +134,12 @@ pi agent (RPC) ──EventStream──→ tui.rs 事件循环
 4. ❌ 连续三次猜错，每次都在写代码而不是先确认
 
 **正确做法：先问「什么是 agents？你期望 AGENTS 面板显示什么？」**
+
+## 功能要点
+
+- **工作区**：名称从 JSONL `cwd` 字段自动提取，显示末级目录（重名时加父级 `/` 区分）；手动添加需输入校验通过的项目路径
+- **持久化**：`~/.config/agent-tui/state.json` — 工作区展开状态 + 活跃会话 ID，退出时自动保存，启动时恢复
+- **确认弹窗**：删除工作区/会话前弹出确认框（`d` 键触发，Enter 确认 / Esc 取消）
 
 ## 当前已知局限
 

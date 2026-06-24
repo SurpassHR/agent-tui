@@ -54,6 +54,7 @@ meta-tui/
 │   ├── lib.rs               # Library root
 │   ├── action.rs            # Action enum
 │   ├── app.rs               # App state machine + TuiState
+│   ├── persistence.rs        # UI state persistence (state.json)
 │   ├── tui.rs               # TUI event loop (RPC + mouse/keyboard)
 │   ├── selection.rs         # Mouse selection highlighting + text collection
 │   ├── config.rs            # CLI argument parsing
