@@ -199,6 +199,8 @@ pub struct TuiState {
     /// 当前按 Space 选中的 Provider 索引（None = 无 Provider 被选中）
     pub active_provider_idx: Option<usize>,
     pub provider_editor: Option<ProviderEditor>,
+    /// 共享配置（与 router 共享的 Arc<RwLock<ProviderConfig>>）
+    pub shared_config: Option<crate::provider::SharedConfig>,
     pub models_fetch_rx: Option<tokio::sync::oneshot::Receiver<Option<String>>>,
     /// skill 列表（从 skills/*/SKILL.md 解析）
     pub skills: Vec<SkillInfo>,
@@ -380,6 +382,7 @@ impl TuiState {
             message_cursor: 0,
             scroll_mode: ScrollMode::TailFollow,
             selection: SelectionState::default(),
+            shared_config: None,
             subagents: Vec::new(),
             skills: Vec::new(),
             skill_cursor: 0,
@@ -536,13 +539,7 @@ impl TuiState {
                             self.active_provider_idx = None;
                             self.current_model.clear();
                         }
-                        let path = crate::provider::config_path();
-                        let cfg = crate::provider::ProviderConfig {
-                            port: self.router_port,
-                            current_model: Some(self.current_model.clone()),
-                            providers: self.providers.clone(),
-                        };
-                        crate::provider::ProviderConfig::save(&path, &cfg);
+                        self.sync_provider_config();
                     }
                     true
                 }
@@ -565,16 +562,32 @@ impl TuiState {
                         }],
                     };
                     self.providers.push(default);
-                    let path = crate::provider::config_path();
-                    let cfg = crate::provider::ProviderConfig {
-                        port: self.router_port,
-                        current_model: Some(self.current_model.clone()),
-                        providers: self.providers.clone(),
-                    };
-                    crate::provider::ProviderConfig::save(&path, &cfg);
+                    self.sync_provider_config();
                     true
                 }
                 _ => false,
+            }
+        }
+    }
+
+    /// 统一保存 provider 配置到磁盘，并同步更新与 router 共享的内存配置
+    pub fn sync_provider_config(&self) {
+        let path = crate::provider::config_path();
+        let cfg = crate::provider::ProviderConfig {
+            port: self.router_port,
+            current_model: Some(self.current_model.clone()),
+            providers: self.providers.clone(),
+        };
+        crate::provider::ProviderConfig::save(&path, &cfg);
+        // 同步到 router 共享的内存配置（若不可用则仅写磁盘）
+        if let Some(ref shared) = self.shared_config {
+            match shared.try_write() {
+                Ok(mut guard) => {
+                    *guard = cfg;
+                }
+                Err(_) => {
+                    tracing::warn!("无法获取 SharedConfig 写锁，router 可能使用过期配置");
+                }
             }
         }
     }
@@ -745,13 +758,7 @@ impl TuiState {
                 } else if idx < self.providers.len() {
                     self.providers[idx] = draft;
                 }
-                let path = crate::provider::config_path();
-                let cfg = crate::provider::ProviderConfig {
-                    port: self.router_port,
-                    current_model: Some(self.current_model.clone()),
-                    providers: self.providers.clone(),
-                };
-                crate::provider::ProviderConfig::save(&path, &cfg);
+                self.sync_provider_config();
                 true
             }
             KeyCode::Backspace => {
@@ -926,13 +933,7 @@ impl TuiState {
                     } else if idx < self.providers.len() {
                         self.providers[idx] = draft;
                     }
-                    let path = crate::provider::config_path();
-                    let cfg = crate::provider::ProviderConfig {
-                        port: self.router_port,
-                        current_model: Some(self.current_model.clone()),
-                        providers: self.providers.clone(),
-                    };
-                    crate::provider::ProviderConfig::save(&path, &cfg);
+                    self.sync_provider_config();
                 }
                 true
             }

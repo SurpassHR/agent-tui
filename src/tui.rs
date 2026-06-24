@@ -296,7 +296,7 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
     // 先启动 Provider Router + 生成 local-provider.ts
     // 必须在 pi 启动之前完成，否则 pi 加载扩展时找不到 local provider
     // ============================================================
-    let (router_port, _) = {
+    let (router_port, shared_config) = {
         let config_path = crate::provider::config_path();
         let provider_cfg = crate::provider::ProviderConfig::load(&config_path);
         app.tui.providers.clone_from(&provider_cfg.providers);
@@ -355,6 +355,7 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
     };
 
     app.tui.router_port = router_port;
+    app.tui.shared_config = Some(shared_config);
 
     // 自检：验证 router 是否可达
     {
@@ -829,14 +830,8 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                                 app.tui.model_just_switched = false;
                                 let model_id = app.tui.current_model.clone();
                                 if !model_id.is_empty() {
-                                    // 保存到 providers.json（路由器 SharedConfig 会读取）
-                                    let path = crate::provider::config_path();
-                                    let cfg = crate::provider::ProviderConfig {
-                                        port: app.tui.router_port,
-                                        current_model: Some(model_id.clone()),
-                                        providers: app.tui.providers.clone(),
-                                    };
-                                    crate::provider::ProviderConfig::save(&path, &cfg);
+                                    // 保存到磁盘并同步到 router 共享内存配置
+                                    app.tui.sync_provider_config();
                                     // 通知 pi 切换模型
                                     let _ = client.request(
                                         serde_json::json!({
