@@ -15,6 +15,10 @@ pub struct Theme {
     pub heading: Color,
     pub success: Color,
     pub selection_fg: Color,
+    /// Diff 删除行背景色
+    pub diff_red_bg: Color,
+    /// Diff 新增行背景色
+    pub diff_green_bg: Color,
 }
 
 impl Theme {
@@ -31,6 +35,8 @@ impl Theme {
             heading: Color::Rgb(255, 191, 92),
             success: Color::Rgb(173, 255, 47),
             selection_fg: Color::Rgb(255, 255, 255),
+            diff_red_bg: Color::Rgb(42, 26, 26),
+            diff_green_bg: Color::Rgb(26, 42, 26),
         }
     }
 }
@@ -59,5 +65,7 @@ mod tests {
         assert_eq!(theme.heading, Color::Rgb(255, 191, 92));
         assert_eq!(theme.success, Color::Rgb(173, 255, 47));
         assert_eq!(theme.selection_fg, Color::Rgb(255, 255, 255));
+        assert_eq!(theme.diff_red_bg, Color::Rgb(42, 26, 26));
+        assert_eq!(theme.diff_green_bg, Color::Rgb(26, 42, 26));
     }
 }

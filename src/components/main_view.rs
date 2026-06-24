@@ -1,5 +1,5 @@
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style, Stylize};
+use ratatui::style::{Style, Stylize};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
@@ -454,9 +454,6 @@ impl MainView {
         let plus_count = diff_lines.iter().filter(|l| l.kind == '+').count();
         let minus_count = diff_lines.iter().filter(|l| l.kind == '-').count();
 
-        let diff_red_bg = Color::Rgb(42, 26, 26);
-        let diff_green_bg = Color::Rgb(26, 42, 26);
-
         let mut lines: Vec<Line<'static>> = Vec::new();
         let header = format!("┌─ Diff: {} (+{} / -{}) ─", path, plus_count, minus_count);
         lines.push(Line::from(vec![header.fg(theme.text_dim)]));
@@ -471,13 +468,13 @@ impl MainView {
                 '-' => {
                     lines.push(Line::from(vec![
                         prefix.fg(theme.text_dim),
-                        dl.text.clone().fg(theme.text).bg(diff_red_bg),
+                        dl.text.clone().fg(theme.text).bg(theme.diff_red_bg),
                     ]));
                 }
                 '+' => {
                     lines.push(Line::from(vec![
                         prefix.fg(theme.text_dim),
-                        dl.text.clone().fg(theme.text).bg(diff_green_bg),
+                        dl.text.clone().fg(theme.text).bg(theme.diff_green_bg),
                     ]));
                 }
                 _ => {

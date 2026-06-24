@@ -280,3 +280,35 @@ async fn test_rpc_backend_spawn_pi() {
     backend.stop().await.expect("停止 pi 进程失败");
     assert!(!backend.is_running(), "pi 进程应已停止");
 }
+
+/// 测试 10：Diff 计算完整性
+#[test]
+fn test_diff_computation_with_similar() {
+    let old = "line1\nline2\nline3\n";
+    let new = "line1\nline2_changed\nline3\nline4\n";
+    let diff = similar::TextDiff::from_lines(old, new);
+    let changes: Vec<_> = diff.iter_all_changes().collect();
+    assert!(changes
+        .iter()
+        .any(|c| c.tag() == similar::ChangeTag::Delete));
+    assert!(changes
+        .iter()
+        .any(|c| c.tag() == similar::ChangeTag::Insert));
+}
+
+/// 测试 11：块折叠/展开往返
+#[test]
+fn test_block_toggle_roundtrip() {
+    let mut states: std::collections::HashMap<String, meta_tui::message::BlockExpanded> =
+        std::collections::HashMap::new();
+    let key = "msg-1:0".to_string();
+    states.insert(key.clone(), meta_tui::message::BlockExpanded::Collapsed);
+    // 展开
+    let s = states.get_mut(&key).unwrap();
+    *s = meta_tui::message::BlockExpanded::Expanded;
+    assert_eq!(*s, meta_tui::message::BlockExpanded::Expanded);
+    // 折叠
+    let s = states.get_mut(&key).unwrap();
+    *s = meta_tui::message::BlockExpanded::Collapsed;
+    assert_eq!(*s, meta_tui::message::BlockExpanded::Collapsed);
+}
