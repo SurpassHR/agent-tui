@@ -478,6 +478,7 @@ impl TuiState {
                             draft: crate::provider::ProviderInfo {
                                 id: String::new(),
                                 name: String::new(),
+                                enabled: true,
                                 bridge: false,
                                 base_url: String::new(),
                                 api_key: String::new(),
@@ -509,11 +510,26 @@ impl TuiState {
                     self.open_edit_provider_editor(self.provider_cursor);
                     true
                 }
+                KeyCode::Char('d') if !self.providers.is_empty() && self.provider_cursor < self.providers.len() => {
+                    // d → 切换 provider enabled/disabled
+                    if let Some(p) = self.providers.get_mut(self.provider_cursor) {
+                        p.enabled = !p.enabled;
+                        let path = crate::provider::config_path();
+                        let cfg = crate::provider::ProviderConfig {
+                            port: self.router_port,
+                            current_model: Some(self.current_model.clone()),
+                            providers: self.providers.clone(),
+                        };
+                        crate::provider::ProviderConfig::save(&path, &cfg);
+                    }
+                    true
+                }
                 KeyCode::Left | KeyCode::Esc => true,
                 KeyCode::Char('+') => {
                     let default = crate::provider::ProviderInfo {
                         id: "new-provider".into(),
                         name: "New Provider".into(),
+                        enabled: true,
                         bridge: false,
                         base_url: "https://api.openai.com/v1".into(),
                         api_key: String::new(),
@@ -603,12 +619,13 @@ impl TuiState {
     }
 
     /// 获取当前活跃 provider（用于 MODEL 子区显示模型列表）
-    /// 优先按 current_model 匹配，匹配失败时回退到第一个 provider
+    /// 优先按 current_model 匹配，只考虑启用的 provider
     pub fn active_provider_for_models(&self) -> Option<&crate::provider::ProviderInfo> {
         self.providers
             .iter()
+            .filter(|p| p.enabled)
             .find(|p| p.models.iter().any(|m| m.id == self.current_model))
-            .or_else(|| self.providers.first())
+            .or_else(|| self.providers.iter().find(|p| p.enabled))
     }
 
     fn handle_provider_editor_key(&mut self, key: crossterm::event::KeyCode) -> bool {
@@ -2727,6 +2744,7 @@ mod tests {
         state.providers = vec![crate::provider::ProviderInfo {
             id: "deepseek".into(),
             name: "DeepSeek".into(),
+            enabled: true,
             bridge: false,
             base_url: "https://api.deepseek.com/v1".into(),
             api_key: "sk-test".into(),
@@ -2777,6 +2795,7 @@ mod tests {
         state.providers = vec![crate::provider::ProviderInfo {
             id: "deepseek".into(),
             name: "DeepSeek".into(),
+            enabled: true,
             bridge: false,
             base_url: "https://api.deepseek.com/v1".into(),
             api_key: "sk-test".into(),
@@ -2798,6 +2817,7 @@ mod tests {
         state.providers = vec![crate::provider::ProviderInfo {
             id: "deepseek".into(),
             name: "DeepSeek".into(),
+            enabled: true,
             bridge: false,
             base_url: "https://api.deepseek.com/v1".into(),
             api_key: "sk-test".into(),
@@ -2830,6 +2850,7 @@ mod tests {
             crate::provider::ProviderInfo {
                 id: "a".into(),
                 name: "A".into(),
+            enabled: true,
                 bridge: false,
                 base_url: "".into(),
                 api_key: "".into(),
@@ -2838,6 +2859,7 @@ mod tests {
             crate::provider::ProviderInfo {
                 id: "b".into(),
                 name: "B".into(),
+            enabled: true,
                 bridge: false,
                 base_url: "".into(),
                 api_key: "".into(),
@@ -2846,6 +2868,7 @@ mod tests {
             crate::provider::ProviderInfo {
                 id: "c".into(),
                 name: "C".into(),
+            enabled: true,
                 bridge: false,
                 base_url: "".into(),
                 api_key: "".into(),
@@ -2896,6 +2919,7 @@ mod tests {
         state.providers = vec![crate::provider::ProviderInfo {
             id: "ds".into(),
             name: "DS".into(),
+            enabled: true,
             bridge: false,
             base_url: "".into(),
             api_key: "".into(),

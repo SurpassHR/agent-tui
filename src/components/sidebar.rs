@@ -280,17 +280,20 @@ impl Sidebar {
                 let is_provider_selected = is_on_providers && i == self.provider_cursor;
                 let (fg, bg) = if is_provider_selected {
                     (theme.selection_fg, theme.highlight_bg)
-                } else if is_active {
+                } else if is_active && p.enabled {
                     (theme.accent, theme.bg)
                 } else {
                     (theme.text_dim, theme.bg)
                 };
                 let cnt = p.models.len();
-                let mut text = if is_active {
-                    format!("  ◆ {}  ({} models)", p.name, cnt)
+                let icon = if !p.enabled {
+                    "⊗"
+                } else if is_active {
+                    "◆"
                 } else {
-                    format!("  ○ {}  ({} models)", p.name, cnt)
+                    "○"
                 };
+                let mut text = format!("  {} {}  ({} models)", icon, p.name, cnt);
                 if p.bridge {
                     text.push_str(" 🔗");
                 }

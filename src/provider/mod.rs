@@ -26,6 +26,10 @@ fn default_port() -> u16 {
     8001
 }
 
+fn default_true() -> bool {
+    true
+}
+
 /// Provider 定义
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderInfo {
@@ -33,6 +37,9 @@ pub struct ProviderInfo {
     pub id: String,
     /// 显示名称
     pub name: String,
+    /// 是否启用
+    #[serde(default = "default_true")]
+    pub enabled: bool,
     /// 桥接模式：透传不做任何处理
     #[serde(default)]
     pub bridge: bool,
@@ -59,12 +66,7 @@ pub struct ModelInfo {
     /// 模型分级：T1 / T2 / T3
     #[serde(default = "default_tier")]
     pub tier: String,
-    #[serde(default = "default_true")]
     pub enabled: bool,
-}
-
-fn default_true() -> bool {
-    true
 }
 
 fn default_tier() -> String {
@@ -107,21 +109,22 @@ impl ProviderConfig {
         }
     }
 
-    /// 获取活跃 provider（bridge 优先，否则按 current_model 匹配）
+    /// 获取活跃 provider（bridge 优先，否则按 current_model 匹配，跳过 disabled）
     pub fn active_provider(&self) -> Option<&ProviderInfo> {
         // bridge provider 优先
-        if let Some(bridge) = self.providers.iter().find(|p| p.bridge) {
+        if let Some(bridge) = self.providers.iter().find(|p| p.bridge && p.enabled) {
             return Some(bridge);
         }
         // 按 current_model 匹配
         if let Some(ref model) = self.current_model {
             for p in &self.providers {
-                if p.models.iter().any(|m| m.id == *model) {
+                if p.enabled && p.models.iter().any(|m| m.id == *model) {
                     return Some(p);
                 }
             }
         }
-        None
+        // 回退到第一个启用的 provider
+        self.providers.iter().find(|p| p.enabled)
     }
 
     /// 根据 model id 查找 provider
