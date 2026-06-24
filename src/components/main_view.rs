@@ -1,11 +1,11 @@
-use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Style, Stylize};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::Frame;
 
 use super::Component;
-use crate::app::{MainViewSubsection, SelectionState, ScrollMode};
+use crate::app::{MainViewSubsection, ScrollMode, SelectionState};
 use crate::message::{ChatMessage, ChatRole, ToolStatus};
 use crate::selection;
 use crate::theme::Theme;
@@ -77,7 +77,11 @@ impl MainView {
 
     /// 渲染消息行
     /// 如果 `is_selected` 为 true，整条消息使用 highlight_bg 背景高亮
-    fn render_message(message: &ChatMessage, theme: &Theme, is_selected: bool) -> Vec<Line<'static>> {
+    fn render_message(
+        message: &ChatMessage,
+        theme: &Theme,
+        is_selected: bool,
+    ) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
 
         match message.role {
@@ -101,9 +105,9 @@ impl MainView {
                         // 仅显示前几行作为预览
                         let preview: String =
                             thinking.lines().take(3).collect::<Vec<_>>().join("\n");
-                        lines.push(Line::from(vec![
-                            format!(" [思考] {}", preview).fg(theme.text_dim).dim(),
-                        ]));
+                        lines.push(Line::from(vec![format!(" [思考] {}", preview)
+                            .fg(theme.text_dim)
+                            .dim()]));
                     }
                 }
 
@@ -121,28 +125,26 @@ impl MainView {
                         ToolStatus::Done => "✓",
                         ToolStatus::Error => "✗",
                     };
-                    lines.push(Line::from(vec![
-                        format!(
-                            " {} {} {}",
-                            icon,
-                            tool_call.tool_name,
-                            " ".to_string().dim()
-                        )
-                        .fg(theme.text_dim),
-                    ]));
+                    lines.push(Line::from(vec![format!(
+                        " {} {} {}",
+                        icon,
+                        tool_call.tool_name,
+                        " ".to_string().dim()
+                    )
+                    .fg(theme.text_dim)]));
                 }
             }
 
             ChatRole::System => {
-                lines.push(Line::from(vec![
-                    format!(" {}", message.text).fg(theme.text_dim).dim(),
-                ]));
+                lines.push(Line::from(vec![format!(" {}", message.text)
+                    .fg(theme.text_dim)
+                    .dim()]));
                 lines.push(Line::from(""));
             }
 
             ChatRole::Error => {
                 lines.push(Line::from(vec![
-                    format!(" ⚠ {}", message.text).fg(theme.accent),
+                    format!(" ⚠ {}", message.text).fg(theme.accent)
                 ]));
                 lines.push(Line::from(""));
             }
@@ -158,7 +160,6 @@ impl MainView {
 
         lines
     }
-
 }
 
 impl Component for MainView {
@@ -286,8 +287,8 @@ mod tests {
     use super::*;
     use crate::message::{ChatMessage, ToolCallInfo, ToolStatus};
     use crate::theme::Theme;
-    use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
     use serde_json::json;
 
     #[test]

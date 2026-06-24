@@ -1,16 +1,16 @@
 //! axum HTTP 路由器 — 启动代理服务
 
-use std::sync::Arc;
-use std::net::SocketAddr;
 use axum::{
-    Router,
-    routing::{get, post},
-    extract::State,
-    response::{IntoResponse, Response},
     body::Body,
-    http::{StatusCode, HeaderMap, HeaderName, HeaderValue},
+    extract::State,
+    http::{HeaderMap, HeaderName, HeaderValue, StatusCode},
+    response::{IntoResponse, Response},
+    routing::{get, post},
+    Router,
 };
 use reqwest::Client;
+use std::net::SocketAddr;
+use std::sync::Arc;
 
 use super::{ProviderConfig, SharedConfig};
 
@@ -56,9 +56,10 @@ pub async fn start_router(config: SharedConfig) -> Result<(), crate::errors::Err
                 try_port += 1;
             }
             Err(e) => {
-                return Err(crate::errors::Error::Config(
-                    format!("cannot bind port {}: {}", port, e)
-                ));
+                return Err(crate::errors::Error::Config(format!(
+                    "cannot bind port {}: {}",
+                    port, e
+                )));
             }
         }
     }
@@ -82,7 +83,14 @@ async fn handle_chat_completions(
 
     if provider.bridge {
         // 桥接模式：纯透传
-        bridge_proxy(&state.http, &provider.base_url, "/v1/chat/completions", headers, body).await
+        bridge_proxy(
+            &state.http,
+            &provider.base_url,
+            "/v1/chat/completions",
+            headers,
+            body,
+        )
+        .await
     } else {
         // 标准模式：读 model 字段路由
         standard_chat_proxy(&state.http, &provider, headers, body, &config).await
@@ -90,18 +98,20 @@ async fn handle_chat_completions(
 }
 
 /// GET /v1/models
-async fn handle_models(
-    State(state): State<Arc<AppState>>,
-) -> Response {
+async fn handle_models(State(state): State<Arc<AppState>>) -> Response {
     let config = state.config.read().await;
 
     // 桥接模式：返回空列表（bridge 自己管理模型）
     if config.providers.iter().any(|p| p.bridge) {
         return (
             StatusCode::OK,
-            [(HeaderName::from_static("content-type"), HeaderValue::from_static("application/json"))],
+            [(
+                HeaderName::from_static("content-type"),
+                HeaderValue::from_static("application/json"),
+            )],
             "{\"object\":\"list\",\"data\":[]}",
-        ).into_response();
+        )
+            .into_response();
     }
 
     // 标准模式：聚合所有 provider 的模型
@@ -122,7 +132,15 @@ async fn handle_models(
         "data": models,
     });
 
-    (StatusCode::OK, [(HeaderName::from_static("content-type"), HeaderValue::from_static("application/json"))], serde_json::to_string(&resp).unwrap_or_default()).into_response()
+    (
+        StatusCode::OK,
+        [(
+            HeaderName::from_static("content-type"),
+            HeaderValue::from_static("application/json"),
+        )],
+        serde_json::to_string(&resp).unwrap_or_default(),
+    )
+        .into_response()
 }
 
 /// 桥接透传代理
@@ -148,14 +166,24 @@ async fn standard_chat_proxy(
     // 从 body 中提取 model 字段
     let bytes = match axum::body::to_bytes(body, 1024 * 1024).await {
         Ok(b) => b,
-        Err(_) => return (StatusCode::BAD_REQUEST, "{\"error\":\"failed to read body\"}").into_response(),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "{\"error\":\"failed to read body\"}",
+            )
+                .into_response()
+        }
     };
 
     // 尝试解析 JSON 提取 model
     let model = match extract_model_from_body(&bytes) {
         Some(m) => m,
         None => {
-            return (StatusCode::BAD_REQUEST, format!("{{\"error\":\"invalid request: missing 'model' field\"}}")).into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("{{\"error\":\"invalid request: missing 'model' field\"}}"),
+            )
+                .into_response();
         }
     };
 
@@ -164,14 +192,22 @@ async fn standard_chat_proxy(
     let target = match target {
         Some(p) => p.clone(),
         None => {
-            return (StatusCode::NOT_FOUND, format!("{{\"error\":\"unknown model: {}\"}}", model)).into_response();
+            return (
+                StatusCode::NOT_FOUND,
+                format!("{{\"error\":\"unknown model: {}\"}}", model),
+            )
+                .into_response();
         }
     };
 
-    let target_url = format!("{}/v1/chat/completions", target.base_url.trim_end_matches('/'));
+    let target_url = format!(
+        "{}/v1/chat/completions",
+        target.base_url.trim_end_matches('/')
+    );
 
     // 构造转发请求
-    let mut req_builder = client.post(&target_url)
+    let mut req_builder = client
+        .post(&target_url)
         .header("Content-Type", "application/json");
 
     // 注入 API key
@@ -203,9 +239,11 @@ async fn standard_chat_proxy(
 
             (status, response_headers, streaming_body).into_response()
         }
-        Err(e) => {
-            (StatusCode::BAD_GATEWAY, format!("{{\"error\":\"upstream error: {}\"}}", e)).into_response()
-        }
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            format!("{{\"error\":\"upstream error: {}\"}}", e),
+        )
+            .into_response(),
     }
 }
 
@@ -216,17 +254,20 @@ fn extract_model_from_body(bytes: &[u8]) -> Option<String> {
 }
 
 /// 通用转发（bridge 模式用）
-async fn proxy_request(
-    client: &Client,
-    target_url: &str,
-    body: Body,
-) -> Response {
+async fn proxy_request(client: &Client, target_url: &str, body: Body) -> Response {
     let bytes = match axum::body::to_bytes(body, 10 * 1024 * 1024).await {
         Ok(b) => b,
-        Err(_) => return (StatusCode::BAD_REQUEST, "{\"error\":\"failed to read body\"}").into_response(),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "{\"error\":\"failed to read body\"}",
+            )
+                .into_response()
+        }
     };
 
-    let req_builder = client.post(target_url)
+    let req_builder = client
+        .post(target_url)
         .header("Content-Type", "application/json")
         .body(bytes.to_vec());
 
@@ -247,10 +288,17 @@ async fn proxy_request(
                 }
             }
 
-            (status, response_headers, axum::body::Body::from_stream(body_stream)).into_response()
+            (
+                status,
+                response_headers,
+                axum::body::Body::from_stream(body_stream),
+            )
+                .into_response()
         }
-        Err(e) => {
-            (StatusCode::BAD_GATEWAY, format!("{{\"error\":\"upstream error: {}\"}}", e)).into_response()
-        }
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            format!("{{\"error\":\"upstream error: {}\"}}", e),
+        )
+            .into_response(),
     }
 }

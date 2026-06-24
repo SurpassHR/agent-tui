@@ -1,8 +1,8 @@
-use ratatui::Frame;
 use ratatui::layout::{Alignment, Direction, Layout, Rect};
 use ratatui::style::{Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::Frame;
 
 use super::Component;
 use crate::app::{SelectionState, SidebarSubsection, WorkspaceNode};
@@ -146,7 +146,9 @@ impl Sidebar {
             ]);
             if is_header {
                 ws_line = ws_line.patch_style(
-                    ratatui::style::Style::default().bg(theme.highlight_bg).fg(theme.selection_fg),
+                    ratatui::style::Style::default()
+                        .bg(theme.highlight_bg)
+                        .fg(theme.selection_fg),
                 );
             }
             lines.push(ws_line);
@@ -185,11 +187,17 @@ impl Sidebar {
                     ]);
                     if is_sess {
                         sess_line = sess_line.patch_style(
-                            ratatui::style::Style::default().bg(theme.highlight_bg).fg(theme.selection_fg),
+                            ratatui::style::Style::default()
+                                .bg(theme.highlight_bg)
+                                .fg(theme.selection_fg),
                         );
                     } else {
                         let sess_style = ratatui::style::Style::default()
-                            .fg(if session.id == self.active_session { theme.accent } else { theme.text })
+                            .fg(if session.id == self.active_session {
+                                theme.accent
+                            } else {
+                                theme.text
+                            })
                             .bg(theme.bg);
                         sess_line = sess_line.style(sess_style);
                     }
@@ -208,7 +216,9 @@ impl Sidebar {
         let focused = self.has_focus && self.subsection == SidebarSubsection::Provider;
 
         // ── 全宽分隔线 ──
-        lines.push(Line::from(vec![Span::from(sep.clone()).fg(theme.border_dim)]));
+        lines.push(Line::from(vec![
+            Span::from(sep.clone()).fg(theme.border_dim)
+        ]));
 
         // ── PROVIDER 区块 ──
         let status = if self.router_running && !self.providers.is_empty() {
@@ -222,13 +232,21 @@ impl Sidebar {
         let p_title = if is_on_providers {
             Line::from(vec![
                 "▎".to_string().fg(theme.accent),
-                format!("PROVIDER ({})", self.providers.len()).fg(theme.accent).bold(),
-                Span::from(status).fg(if self.router_running { theme.success } else { theme.text_dim }),
+                format!("PROVIDER ({})", self.providers.len())
+                    .fg(theme.accent)
+                    .bold(),
+                Span::from(status).fg(if self.router_running {
+                    theme.success
+                } else {
+                    theme.text_dim
+                }),
             ])
         } else {
             let mut s = vec![
                 Span::from(" "),
-                Span::from(format!("PROVIDER ({})", self.providers.len())).fg(theme.heading).bold(),
+                Span::from(format!("PROVIDER ({})", self.providers.len()))
+                    .fg(theme.heading)
+                    .bold(),
             ];
             if self.router_running {
                 s.push(Span::from(status).fg(theme.success));
@@ -240,12 +258,13 @@ impl Sidebar {
         if self.providers.is_empty() {
             // Empty state: first item is "add provider" action
             if is_on_providers {
-                lines.push(Line::from(
-                    Span::from(" ◆ [+] add provider").fg(theme.selection_fg)
-                ).style(ratatui::style::Style::default().bg(theme.highlight_bg)));
+                lines.push(
+                    Line::from(Span::from(" ◆ [+] add provider").fg(theme.selection_fg))
+                        .style(ratatui::style::Style::default().bg(theme.highlight_bg)),
+                );
             } else {
                 lines.push(Line::from(
-                    Span::from(" ○ [+] add provider").fg(theme.text_dim)
+                    Span::from(" ○ [+] add provider").fg(theme.text_dim),
                 ));
             }
         } else {
@@ -269,27 +288,40 @@ impl Sidebar {
                 } else {
                     format!("○ {}  ({} models)", p.name, cnt)
                 };
-                if p.bridge { text.push_str(" 🔗"); }
-                lines.push(Line::from(vec![Span::from(text)]).style(ratatui::style::Style::default().fg(fg).bg(bg)));
+                if p.bridge {
+                    text.push_str(" 🔗");
+                }
+                lines.push(
+                    Line::from(vec![Span::from(text)])
+                        .style(ratatui::style::Style::default().fg(fg).bg(bg)),
+                );
             }
-        }
 
-        // Add provider hint (when focused)
-        if is_on_providers {
-            lines.push(Line::from(
-                Span::from("  + add provider  [Space]").fg(theme.text_dim)
-            ));
+            let is_add_selected = is_on_providers && self.provider_cursor == self.providers.len();
+            let (fg, bg, prefix) = if is_add_selected {
+                (theme.selection_fg, theme.highlight_bg, "◆")
+            } else {
+                (theme.text_dim, theme.bg, "○")
+            };
+            lines.push(
+                Line::from(Span::from(format!(" {} [+] add provider", prefix)))
+                    .style(ratatui::style::Style::default().fg(fg).bg(bg)),
+            );
         }
 
         // ── MODEL 区块（独立跟随 active provider） ──
         let active_provider = if self.current_model.is_empty() {
             self.providers.first()
         } else {
-            self.providers.iter().find(|p| p.models.iter().any(|m| m.id == self.current_model))
+            self.providers
+                .iter()
+                .find(|p| p.models.iter().any(|m| m.id == self.current_model))
         };
 
         if let Some(ap) = active_provider {
-            lines.push(Line::from(vec![Span::from(sep.clone()).fg(theme.border_dim)]));
+            lines.push(Line::from(vec![
+                Span::from(sep.clone()).fg(theme.border_dim)
+            ]));
 
             let is_on_models = focused && self.selecting_model;
             let m_title = if is_on_models {
@@ -323,11 +355,17 @@ impl Sidebar {
                 } else {
                     format!("{}K", m.context_window / 1000)
                 };
-                lines.push(Line::from(
-                    Span::from(format!("  {} [{}] {} {}{}",
+                lines.push(
+                    Line::from(Span::from(format!(
+                        "  {} [{}] {} {}{}",
                         if is_model_active { "◆" } else { "○" },
-                        m.tier, ctx, m.id, marker))
-                ).style(Style::default().fg(mf).bg(mb)));
+                        m.tier,
+                        ctx,
+                        m.id,
+                        marker
+                    )))
+                    .style(Style::default().fg(mf).bg(mb)),
+                );
             }
         }
 
@@ -381,11 +419,7 @@ impl Component for Sidebar {
         } else {
             Line::from(" ACTIVE SESSION".to_string().fg(theme.heading).bold())
         };
-        let top_lines = vec![
-            top_title,
-            self.render_active_session(theme),
-            Line::from(""),
-        ];
+        let top_lines = vec![top_title, self.render_active_session(theme), Line::from("")];
 
         // ── 中部：工作区树（带内部滚动） ──
         let mut ws_lines: Vec<Line<'static>> = Vec::new();

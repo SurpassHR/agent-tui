@@ -1,8 +1,8 @@
-use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
+use ratatui::Frame;
 
 use super::Component;
 use crate::app::AgentStatus;

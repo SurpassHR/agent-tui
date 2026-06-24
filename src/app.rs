@@ -4,17 +4,20 @@ use tokio::sync::mpsc;
 
 use crate::action::Action;
 use crate::backend::AgentBackend;
-use crate::components::Component;
 use crate::components::agent_panel::AgentPanel;
 use crate::components::bottom_bar::BottomBar;
 use crate::components::main_view::MainView;
 use crate::components::popup::Popup;
 use crate::components::sidebar::Sidebar;
+use crate::components::Component;
 use crate::errors::Result;
 use crate::message::{ChatMessage, ChatRole};
 use crate::theme::Theme;
-use ratatui::text::{Line, Span};
+use crossterm::event::KeyCode;
+use ratatui::layout::Rect;
 use ratatui::style::Stylize;
+use ratatui::text::{Line, Span};
+use ratatui::widgets::Clear;
 
 /// Session 信息
 #[derive(Debug, Clone, Default)]
@@ -187,8 +190,9 @@ pub struct TuiState {
     pub provider_popup: Option<usize>,
     /// 模型列表中光标位置
     pub model_cursor: usize,
-    /// 是否正在选择模型（展开状态）
     pub selecting_model: bool,
+    pub provider_editor: Option<ProviderEditor>,
+    pub models_fetch_rx: Option<tokio::sync::oneshot::Receiver<Option<String>>>,
     /// skill 列表（从 skills/*/SKILL.md 解析）
     pub skills: Vec<SkillInfo>,
     /// Agent 面板内 skill 列表选中光标
@@ -222,6 +226,124 @@ pub struct SelectionState {
     pub focus: Option<(u16, u16)>,
     /// 最近一次渲染时收集的选中文本（由 apply_selection 填充）
     pub selected_text: String,
+}
+
+/// Provider 编辑状态（表单编辑模式）
+#[derive(Debug, Clone)]
+pub struct ProviderEditor {
+    pub is_new: bool,
+    pub index: usize,
+    pub draft: crate::provider::ProviderInfo,
+    pub field_focus: usize,
+    pub models_text: String,
+    pub models_fetching: bool,
+    pub model_mgr: Option<ModelManager>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ModelManager {
+    pub cursor: usize,
+    pub editor: Option<ModelFieldEditor>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ModelFieldEditor {
+    pub field_focus: usize,
+    pub draft_id: String,
+    pub draft_tier: String,
+    pub draft_ctx: String,
+    pub model_index: usize,
+}
+
+pub fn rebuild_models_text(models: &[crate::provider::ModelInfo]) -> String {
+    models
+        .iter()
+        .map(|m| format!("{}:{}:{}", m.id, m.tier, m.context_window))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+pub fn merge_models_text(
+    text: &str,
+    existing: &[crate::provider::ModelInfo],
+) -> Vec<crate::provider::ModelInfo> {
+    let parsed: Vec<crate::provider::ModelInfo> = text
+        .split('\n')
+        .filter(|s| !s.trim().is_empty())
+        .filter_map(|entry| {
+            let parts: Vec<&str> = entry.trim().split(':').collect();
+            let id = parts.first()?.trim().to_string();
+            if id.is_empty() {
+                return None;
+            }
+            let tier = parts.get(1).map(|s| s.trim()).unwrap_or("T2").to_string();
+            let ctx = parts
+                .get(2)
+                .and_then(|s| s.trim().parse().ok())
+                .unwrap_or(128000);
+            let enabled = existing
+                .iter()
+                .find(|m| m.id == id)
+                .map(|m| m.enabled)
+                .unwrap_or(false);
+            Some(crate::provider::ModelInfo {
+                id,
+                name: String::new(),
+                context_window: ctx,
+                reasoning: tier != "T1",
+                tier,
+                enabled,
+            })
+        })
+        .collect();
+    if parsed.is_empty() {
+        existing.to_vec()
+    } else {
+        parsed
+    }
+}
+
+pub fn pad_value(value: &str, width: usize) -> String {
+    use unicode_width::UnicodeWidthStr;
+    let display_w = UnicodeWidthStr::width(value);
+    if display_w >= width {
+        let mut w = 0usize;
+        let clipped: String = value
+            .chars()
+            .take_while(|c| {
+                let cw = unicode_width::UnicodeWidthChar::width(*c).unwrap_or(0);
+                if w + cw <= width {
+                    w += cw;
+                    true
+                } else {
+                    false
+                }
+            })
+            .collect();
+        clipped
+    } else {
+        let pad = width - display_w;
+        format!("{}{}", value, " ".repeat(pad))
+    }
+}
+
+/// 编辑表单视觉焦点顺序：模式切换 → Provider ID → 名称 → Base URL → API Key → 模型
+const FIELD_ORDER: [usize; 6] = [4, 0, 1, 2, 3, 5];
+
+fn prev_field(current: usize) -> usize {
+    if let Some(pos) = FIELD_ORDER.iter().position(|&f| f == current) {
+        FIELD_ORDER[(pos + FIELD_ORDER.len() - 1) % FIELD_ORDER.len()]
+    } else {
+        current
+    }
+}
+
+fn next_field(current: usize) -> usize {
+    if let Some(pos) = FIELD_ORDER.iter().position(|&f| f == current) {
+        FIELD_ORDER[(pos + 1) % FIELD_ORDER.len()]
+    } else {
+        current
+    }
 }
 
 impl Default for TuiState {
@@ -263,6 +385,8 @@ impl TuiState {
             model_cursor: 0,
             selecting_model: false,
             provider_popup: None,
+            provider_editor: None,
+            models_fetch_rx: None,
         }
     }
 
@@ -278,17 +402,41 @@ impl TuiState {
         count
     }
 
+    /// 打开已有 Provider 编辑表单，预填充数据。
+    fn open_edit_provider_editor(&mut self, idx: usize) {
+        if let Some(p) = self.providers.get(idx) {
+            self.provider_popup = None;
+            let models_text = p
+                .models
+                .iter()
+                .map(|m| format!("{}:{}:{}", m.id, m.tier, m.context_window))
+                .collect::<Vec<_>>()
+                .join("\n");
+            self.provider_editor = Some(ProviderEditor {
+                is_new: false,
+                index: idx,
+                draft: p.clone(),
+                field_focus: 4,
+                models_text,
+                models_fetching: false,
+                model_mgr: None,
+            });
+        }
+    }
+
     /// 处理 Provider section 键盘事件
     /// 返回 true 表示事件被消费，false 表示未处理
     pub fn handle_provider_key(&mut self, key: crossterm::event::KeyCode) -> bool {
+        if self.provider_editor.is_some() {
+            return self.handle_provider_editor_key(key);
+        }
         if let Some(popup_idx) = self.provider_popup {
-            // Popup 打开：仅 Esc=关闭, Enter=激活
             match key {
-                crossterm::event::KeyCode::Esc => {
+                KeyCode::Esc => {
                     self.provider_popup = None;
                     true
                 }
-                crossterm::event::KeyCode::Enter => {
+                KeyCode::Enter => {
                     if let Some(p) = self.providers.get(popup_idx) {
                         if let Some(first) = p.models.first() {
                             self.current_model = first.id.clone();
@@ -300,69 +448,100 @@ impl TuiState {
                 _ => false,
             }
         } else {
-            // 正常导航
             match key {
-                crossterm::event::KeyCode::Up => {
+                KeyCode::Up => {
                     if self.selecting_model {
-                        let cur = self.model_cursor;
-                        if cur > 0 { self.model_cursor = cur - 1; }
-                    } else {
-                        let cur = self.provider_cursor;
-                        if cur > 0 { self.provider_cursor = cur - 1; }
-                    }
-                    true
-                }
-                crossterm::event::KeyCode::Down => {
-                    if self.selecting_model {
-                        let cur = self.model_cursor;
-                        let total = self.providers.get(self.provider_cursor)
-                            .map(|p| p.models.len()).unwrap_or(0);
-                        if cur + 1 < total { self.model_cursor = cur + 1; }
-                    } else {
-                        let cur = self.provider_cursor;
-                        if cur + 1 < self.providers.len() { self.provider_cursor = cur + 1; }
-                    }
-                    true
-                }
-                crossterm::event::KeyCode::Right => {
-                    if !self.selecting_model {
-                        if self.providers.get(self.provider_cursor)
-                            .map(|p| !p.models.is_empty()).unwrap_or(false)
-                        {
-                            self.selecting_model = true;
-                            self.model_cursor = 0;
+                        if self.model_cursor > 0 {
+                            self.model_cursor -= 1;
                         }
+                    } else if self.provider_cursor > 0 {
+                        self.provider_cursor -= 1;
                     }
                     true
                 }
-                crossterm::event::KeyCode::Enter => {
+                KeyCode::Down => {
+                    if self.selecting_model {
+                        let total = self
+                            .providers
+                            .get(self.provider_cursor)
+                            .map(|p| p.models.len())
+                            .unwrap_or(0);
+                        if self.model_cursor + 1 < total {
+                            self.model_cursor += 1;
+                        }
+                    } else if self.provider_cursor < self.providers.len() {
+                        self.provider_cursor += 1;
+                    }
+                    true
+                }
+                KeyCode::Right => {
+                    if !self.selecting_model
+                        && self
+                            .providers
+                            .get(self.provider_cursor)
+                            .map(|p| !p.models.is_empty())
+                            .unwrap_or(false)
+                    {
+                        self.selecting_model = true;
+                        self.model_cursor = 0;
+                    }
+                    true
+                }
+                KeyCode::Enter => {
                     if self.selecting_model {
                         if let Some(p) = self.providers.get(self.provider_cursor) {
                             if let Some(m) = p.models.get(self.model_cursor) {
                                 self.current_model = m.id.clone();
-                                self.provider_popup = Some(self.provider_cursor);
                             }
                         }
+                        self.selecting_model = false;
+                        self.open_edit_provider_editor(self.provider_cursor);
+                    } else if self.provider_cursor == self.providers.len()
+                        || self.providers.is_empty()
+                    {
+                        self.provider_popup = None;
+                        self.provider_editor = Some(ProviderEditor {
+                            is_new: true,
+                            index: self.providers.len(),
+                            draft: crate::provider::ProviderInfo {
+                                id: String::new(),
+                                name: String::new(),
+                                bridge: false,
+                                base_url: String::new(),
+                                api_key: String::new(),
+                                models: vec![],
+                            },
+                            field_focus: 4,
+                            models_text: String::new(),
+                            models_fetching: false,
+                            model_mgr: None,
+                        });
                     } else if !self.providers.is_empty() {
-                        self.provider_popup = Some(self.provider_cursor);
+                        self.open_edit_provider_editor(self.provider_cursor);
                     }
                     true
                 }
-                crossterm::event::KeyCode::Left | crossterm::event::KeyCode::Esc => {
+                KeyCode::Left | KeyCode::Esc => {
                     if self.selecting_model {
                         self.selecting_model = false;
                     }
                     true
                 }
-                crossterm::event::KeyCode::Char('+') => {
+                KeyCode::Char('+') => {
                     if !self.selecting_model {
                         let default = crate::provider::ProviderInfo {
-                            id: "new-provider".into(), name: "New Provider".into(),
-                            bridge: false, base_url: "https://api.openai.com/v1".into(),
+                            id: "new-provider".into(),
+                            name: "New Provider".into(),
+                            bridge: false,
+                            base_url: "https://api.openai.com/v1".into(),
                             api_key: String::new(),
                             models: vec![crate::provider::ModelInfo {
-                                id: "gpt-4o".into(), name: "GPT-4o".into(),
-                                context_window: 128000, reasoning: true, tier: "T3".into(),
+                                id: "gpt-4o".into(),
+                                name: "GPT-4o".into(),
+                                context_window: 128000,
+                                reasoning: true,
+                                tier: "T3".into(),
+                                enabled: true,
                             }],
                         };
                         self.providers.push(default);
@@ -381,8 +560,353 @@ impl TuiState {
         }
     }
 
-    /// 获取扁平化索引对应的项信息（用于渲染光标）
-    /// 返回 (is_workspace, ws_index, session_index_option)
+    fn handle_provider_editor_key(&mut self, key: crossterm::event::KeyCode) -> bool {
+        if self.provider_editor.as_ref().unwrap().model_mgr.is_some() {
+            return self.handle_model_manager_key(key);
+        }
+        match key {
+            KeyCode::Esc => {
+                self.provider_editor = None;
+                true
+            }
+            KeyCode::Tab => {
+                if let Some(ref mut editor) = self.provider_editor {
+                    let old = editor.field_focus;
+                    let new = next_field(old);
+                    editor.field_focus = new;
+                    if old == 3
+                        && new != 3
+                        && !editor.draft.bridge
+                        && !editor.draft.base_url.trim().is_empty()
+                        && !editor.draft.api_key.trim().is_empty()
+                        && !editor.models_fetching
+                    {
+                        editor.models_fetching = true;
+                    }
+                }
+                true
+            }
+            KeyCode::Enter => {
+                if self.provider_editor.as_ref().unwrap().field_focus == 5 {
+                    let editor = self.provider_editor.as_mut().unwrap();
+                    editor.draft.models =
+                        merge_models_text(&editor.models_text, &editor.draft.models);
+                    editor.model_mgr = Some(ModelManager {
+                        cursor: 0,
+                        editor: None,
+                    });
+                    return true;
+                }
+                let editor = self.provider_editor.take().unwrap();
+                let idx = editor.index;
+                let mut draft = editor.draft;
+                draft.models.retain(|m| m.enabled);
+                if editor.is_new {
+                    self.providers.push(draft);
+                } else if idx < self.providers.len() {
+                    self.providers[idx] = draft;
+                }
+                let path = crate::provider::config_path();
+                let cfg = crate::provider::ProviderConfig {
+                    port: 8001,
+                    current_model: Some(self.current_model.clone()),
+                    providers: self.providers.clone(),
+                };
+                crate::provider::ProviderConfig::save(&path, &cfg);
+                true
+            }
+            KeyCode::Backspace => {
+                if let Some(ref mut editor) = self.provider_editor {
+                    match editor.field_focus {
+                        0 => {
+                            editor.draft.id.pop();
+                        }
+                        1 => {
+                            editor.draft.name.pop();
+                        }
+                        2 => {
+                            editor.draft.base_url.pop();
+                        }
+                        3 => {
+                            editor.draft.api_key.pop();
+                        }
+                        _ => {}
+                    }
+                }
+                true
+            }
+            KeyCode::Char(' ') => {
+                if let Some(ref mut editor) = self.provider_editor {
+                    if editor.field_focus == 4 {
+                        editor.draft.bridge = !editor.draft.bridge;
+                    } else if editor.field_focus != 5 {
+                        match editor.field_focus {
+                            0 => {
+                                editor.draft.id.push(' ');
+                            }
+                            1 => {
+                                editor.draft.name.push(' ');
+                            }
+                            2 => {
+                                editor.draft.base_url.push(' ');
+                            }
+                            3 => {
+                                editor.draft.api_key.push(' ');
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                true
+            }
+            KeyCode::Char(c) => {
+                if let Some(ref mut editor) = self.provider_editor {
+                    match editor.field_focus {
+                        0 => {
+                            editor.draft.id.push(c);
+                        }
+                        1 => {
+                            editor.draft.name.push(c);
+                        }
+                        2 => {
+                            editor.draft.base_url.push(c);
+                        }
+                        3 => {
+                            editor.draft.api_key.push(c);
+                        }
+                        4 | 5 => {}
+                        _ => {}
+                    }
+                }
+                true
+            }
+            KeyCode::Up => {
+                if let Some(ref mut editor) = self.provider_editor {
+                    let old = editor.field_focus;
+                    let new = prev_field(old);
+                    editor.field_focus = new;
+                    if old == 3
+                        && new != 3
+                        && !editor.draft.bridge
+                        && !editor.draft.base_url.trim().is_empty()
+                        && !editor.draft.api_key.trim().is_empty()
+                        && !editor.models_fetching
+                    {
+                        editor.models_fetching = true;
+                    }
+                }
+                true
+            }
+            KeyCode::Down => {
+                if let Some(ref mut editor) = self.provider_editor {
+                    let old = editor.field_focus;
+                    let new = next_field(old);
+                    editor.field_focus = new;
+                    if old == 3
+                        && new != 3
+                        && !editor.draft.bridge
+                        && !editor.draft.base_url.trim().is_empty()
+                        && !editor.draft.api_key.trim().is_empty()
+                        && !editor.models_fetching
+                    {
+                        editor.models_fetching = true;
+                    }
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn handle_model_manager_key(&mut self, key: crossterm::event::KeyCode) -> bool {
+        if self
+            .provider_editor
+            .as_ref()
+            .unwrap()
+            .model_mgr
+            .as_ref()
+            .unwrap()
+            .editor
+            .is_some()
+        {
+            return self.handle_model_field_editor_key(key);
+        }
+        let editor = self.provider_editor.as_mut().unwrap();
+        let mgr = editor.model_mgr.as_mut().unwrap();
+        let mc = editor.draft.models.len();
+        let last = mc + 1;
+        match key {
+            KeyCode::Up | KeyCode::Char('k') => {
+                if mgr.cursor > 0 {
+                    mgr.cursor -= 1;
+                }
+                true
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if mgr.cursor < last {
+                    mgr.cursor += 1;
+                }
+                true
+            }
+            KeyCode::Enter => {
+                if mgr.cursor < mc {
+                    let m = editor.draft.models[mgr.cursor].clone();
+                    mgr.editor = Some(ModelFieldEditor {
+                        field_focus: 0,
+                        draft_id: m.id.clone(),
+                        draft_tier: m.tier.clone(),
+                        draft_ctx: m.context_window.to_string(),
+                        model_index: mgr.cursor,
+                    });
+                } else if mgr.cursor == mc {
+                    let idx = editor.draft.models.len();
+                    editor.draft.models.push(crate::provider::ModelInfo {
+                        id: "new-model".into(),
+                        name: String::new(),
+                        context_window: 128000,
+                        reasoning: true,
+                        tier: "T2".into(),
+                        enabled: true,
+                    });
+                    mgr.cursor = idx;
+                    mgr.editor = Some(ModelFieldEditor {
+                        field_focus: 0,
+                        draft_id: "new-model".into(),
+                        draft_tier: "T2".into(),
+                        draft_ctx: "128000".into(),
+                        model_index: idx,
+                    });
+                } else {
+                    editor.models_text = rebuild_models_text(&editor.draft.models);
+                    editor.model_mgr = None;
+                    let taken = self.provider_editor.take().unwrap();
+                    let idx = taken.index;
+                    let mut draft = taken.draft;
+                    draft.models.retain(|m| m.enabled);
+                    if taken.is_new {
+                        self.providers.push(draft);
+                    } else if idx < self.providers.len() {
+                        self.providers[idx] = draft;
+                    }
+                    let path = crate::provider::config_path();
+                    let cfg = crate::provider::ProviderConfig {
+                        port: 8001,
+                        current_model: Some(self.current_model.clone()),
+                        providers: self.providers.clone(),
+                    };
+                    crate::provider::ProviderConfig::save(&path, &cfg);
+                }
+                true
+            }
+            KeyCode::Delete | KeyCode::Backspace => {
+                if mgr.cursor < mc {
+                    editor.draft.models.remove(mgr.cursor);
+                    if mgr.cursor > 0 && mgr.cursor >= editor.draft.models.len() {
+                        mgr.cursor = editor.draft.models.len();
+                    }
+                }
+                true
+            }
+            KeyCode::Char(' ') => {
+                if mgr.cursor < mc {
+                    if let Some(m) = editor.draft.models.get_mut(mgr.cursor) {
+                        m.enabled = !m.enabled;
+                    }
+                }
+                true
+            }
+            KeyCode::Tab => true,
+            KeyCode::Esc => {
+                editor.models_text = rebuild_models_text(&editor.draft.models);
+                editor.model_mgr = None;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn handle_model_field_editor_key(&mut self, key: crossterm::event::KeyCode) -> bool {
+        const FO: [usize; 3] = [0, 1, 2];
+        let editor = self.provider_editor.as_mut().unwrap();
+        let mgr = editor.model_mgr.as_mut().unwrap();
+        let fe = mgr.editor.as_mut().unwrap();
+        match key {
+            KeyCode::Up | KeyCode::Down | KeyCode::Tab => {
+                let pos = FO.iter().position(|&f| f == fe.field_focus).unwrap_or(0);
+                fe.field_focus = FO[match key {
+                    KeyCode::Up => (pos + 2) % 3,
+                    _ => (pos + 1) % 3,
+                }];
+                true
+            }
+            KeyCode::Enter => {
+                let tu = fe.draft_tier.to_uppercase();
+                if fe.draft_id.trim().is_empty() {
+                    fe.field_focus = 0;
+                    return true;
+                }
+                if tu != "T1" && tu != "T2" && tu != "T3" {
+                    fe.field_focus = 1;
+                    return true;
+                }
+                match fe.draft_ctx.parse::<u32>() {
+                    Ok(v) if v > 0 => {}
+                    _ => {
+                        fe.field_focus = 2;
+                        return true;
+                    }
+                }
+                if fe.model_index < editor.draft.models.len() {
+                    editor.draft.models[fe.model_index] = crate::provider::ModelInfo {
+                        id: fe.draft_id.trim().to_string(),
+                        name: String::new(),
+                        context_window: fe.draft_ctx.parse().unwrap_or(128000),
+                        reasoning: tu != "T1",
+                        tier: tu,
+                        enabled: true,
+                    };
+                }
+                mgr.editor = None;
+                true
+            }
+            KeyCode::Esc => {
+                mgr.editor = None;
+                true
+            }
+            KeyCode::Backspace => {
+                match fe.field_focus {
+                    0 => {
+                        fe.draft_id.pop();
+                    }
+                    1 => {
+                        fe.draft_tier.pop();
+                    }
+                    2 => {
+                        fe.draft_ctx.pop();
+                    }
+                    _ => {}
+                }
+                true
+            }
+            KeyCode::Char(c) => {
+                match fe.field_focus {
+                    0 => {
+                        fe.draft_id.push(c);
+                    }
+                    1 => {
+                        fe.draft_tier.push(c);
+                    }
+                    2 => {
+                        fe.draft_ctx.push(c);
+                    }
+                    _ => {}
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
     pub fn sidebar_item_at(&self, cursor: usize) -> Option<(bool, usize, Option<usize>)> {
         let mut idx = 0;
         for (wi, ws) in self.workspaces.iter().enumerate() {
@@ -596,40 +1120,38 @@ impl App {
                 self.tui.focus_panel = panels[next];
             }
 
-            Action::CycleFocusSubsection(dir) => {
-                match self.tui.focus_panel {
-                    FocusPanel::Sidebar => {
-                        let subs = [
-                            SidebarSubsection::ActiveSession,
-                            SidebarSubsection::Workspace,
-                            SidebarSubsection::Provider,
-                        ];
-                        let current = self.tui.sidebar_subsection;
-                        let idx = subs.iter().position(|s| *s == current).unwrap_or(1);
-                        let next = ((idx as i32 + dir).rem_euclid(3)) as usize;
-                        self.tui.sidebar_subsection = subs[next];
-                    }
-                    FocusPanel::MainView => {
-                        let subs = [MainViewSubsection::Messages, MainViewSubsection::Input];
-                        let current = self.tui.main_view_subsection;
-                        let idx = subs.iter().position(|s| *s == current).unwrap_or(1);
-                        let next = ((idx as i32 + dir).rem_euclid(2)) as usize;
-                        self.tui.main_view_subsection = subs[next];
-                    }
-                    FocusPanel::AgentPanel => {
-                        let subs = [
-                            AgentPanelSubsection::Agents,
-                            AgentPanelSubsection::Skills,
-                            AgentPanelSubsection::Mcps,
-                            AgentPanelSubsection::Tasks,
-                        ];
-                        let current = self.tui.agent_panel_subsection;
-                        let idx = subs.iter().position(|s| *s == current).unwrap_or(0);
-                        let next = ((idx as i32 + dir).rem_euclid(4)) as usize;
-                        self.tui.agent_panel_subsection = subs[next];
-                    }
+            Action::CycleFocusSubsection(dir) => match self.tui.focus_panel {
+                FocusPanel::Sidebar => {
+                    let subs = [
+                        SidebarSubsection::ActiveSession,
+                        SidebarSubsection::Workspace,
+                        SidebarSubsection::Provider,
+                    ];
+                    let current = self.tui.sidebar_subsection;
+                    let idx = subs.iter().position(|s| *s == current).unwrap_or(1);
+                    let next = ((idx as i32 + dir).rem_euclid(3)) as usize;
+                    self.tui.sidebar_subsection = subs[next];
                 }
-            }
+                FocusPanel::MainView => {
+                    let subs = [MainViewSubsection::Messages, MainViewSubsection::Input];
+                    let current = self.tui.main_view_subsection;
+                    let idx = subs.iter().position(|s| *s == current).unwrap_or(1);
+                    let next = ((idx as i32 + dir).rem_euclid(2)) as usize;
+                    self.tui.main_view_subsection = subs[next];
+                }
+                FocusPanel::AgentPanel => {
+                    let subs = [
+                        AgentPanelSubsection::Agents,
+                        AgentPanelSubsection::Skills,
+                        AgentPanelSubsection::Mcps,
+                        AgentPanelSubsection::Tasks,
+                    ];
+                    let current = self.tui.agent_panel_subsection;
+                    let idx = subs.iter().position(|s| *s == current).unwrap_or(0);
+                    let next = ((idx as i32 + dir).rem_euclid(4)) as usize;
+                    self.tui.agent_panel_subsection = subs[next];
+                }
+            },
 
             _ => {
                 tracing::debug!("未处理的 action: {:?}", action);
@@ -791,9 +1313,12 @@ impl App {
         // 同步 provider 数据到 sidebar
         self.tui.sidebar.providers.clone_from(&self.tui.providers);
         self.tui.sidebar.router_running = self.tui.router_running;
-        self.tui.sidebar.current_model.clone_from(&self.tui.current_model);
-        // Clamp provider_cursor to valid range
-        let max_provider = self.tui.providers.len().saturating_sub(1);
+        self.tui
+            .sidebar
+            .current_model
+            .clone_from(&self.tui.current_model);
+        // Clamp provider_cursor to valid range（含 add provider 行）
+        let max_provider = self.tui.providers.len();
         if self.tui.provider_cursor > max_provider {
             self.tui.provider_cursor = max_provider;
         }
@@ -882,7 +1407,11 @@ impl App {
                 let popup_area = crate::components::popup::centered_rect(65, 55, f.area());
                 f.render_widget(ratatui::widgets::Clear, popup_area);
                 let block = ratatui::widgets::Block::default()
-                    .title(format!(" {} {} ", if p.bridge { "\u{1f517}" } else { "\u{25c6}" }, p.name))
+                    .title(format!(
+                        " {} {} ",
+                        if p.bridge { "\u{1f517}" } else { "\u{25c6}" },
+                        p.name
+                    ))
                     .borders(ratatui::widgets::Borders::ALL)
                     .border_type(ratatui::widgets::BorderType::Plain)
                     .border_style(theme.border);
@@ -902,19 +1431,477 @@ impl App {
                     Span::from(if p.bridge { "bridge" } else { "standard" }).fg(theme.accent),
                 ]));
                 ln.push(Line::from(""));
-                ln.push(Line::from(Span::from(format!("  models ({})", p.models.len())).fg(theme.heading).bold()));
+                ln.push(Line::from(
+                    Span::from(format!("  models ({})", p.models.len()))
+                        .fg(theme.heading)
+                        .bold(),
+                ));
                 for m in &p.models {
                     let ctx = if m.context_window >= 1_000_000 {
                         format!("{}M", m.context_window / 1_000_000)
                     } else {
                         format!("{}K", m.context_window / 1000)
                     };
-                    ln.push(Line::from(Span::from(format!("    o {:25} [{}] {:>6}", m.id, m.tier, ctx)).fg(theme.text_dim)));
+                    ln.push(Line::from(
+                        Span::from(format!("    o {:25} [{}] {:>6}", m.id, m.tier, ctx))
+                            .fg(theme.text_dim),
+                    ));
                 }
                 ln.push(Line::from(""));
-                ln.push(Line::from(Span::from("  [Esc] close  [Enter] activate").fg(theme.text_dim)));
-                f.render_widget(ratatui::widgets::Paragraph::new(ln).style(ratatui::style::Style::default().bg(theme.bg)), inner);
-            } else { self.tui.provider_popup = None; }
+                ln.push(Line::from(
+                    Span::from("  [Esc] close  [Enter] activate").fg(theme.text_dim),
+                ));
+                f.render_widget(
+                    ratatui::widgets::Paragraph::new(ln)
+                        .style(ratatui::style::Style::default().bg(theme.bg)),
+                    inner,
+                );
+            } else {
+                self.tui.provider_popup = None;
+            }
+        }
+
+        // ── Provider 编辑表单弹窗 ──
+        if let Some(ref editor) = self.tui.provider_editor {
+            if editor.model_mgr.is_none() {
+                let term_area = f.area();
+                let popup_w = ((term_area.width as u32 * 70) / 100) as u16;
+                let inner_w = popup_w.saturating_sub(2);
+                let box_w = inner_w.saturating_sub(8).max(24) as usize;
+                let value_w = box_w.saturating_sub(4);
+                let rule = "─".repeat(inner_w.saturating_sub(4).min(58) as usize);
+                let field_border = "─".repeat(value_w);
+
+                let icon = if editor.is_new { "＋" } else { "✎" };
+                let title = if editor.is_new {
+                    format!(" {} 添加 Provider ", icon)
+                } else {
+                    format!(" {} 编辑 Provider ", icon)
+                };
+                let is_std = !editor.draft.bridge;
+                let (std_fg, brg_fg) = if is_std {
+                    (theme.success, theme.text_dim)
+                } else {
+                    (theme.text_dim, theme.success)
+                };
+
+                let mask_secret = |value: &str, width: usize| -> String {
+                    if value.is_empty() {
+                        String::new()
+                    } else {
+                        let mut chars = value.chars();
+                        let head = chars.next().map(|c| c.to_string()).unwrap_or_default();
+                        let hidden_len = chars.count().min(width.saturating_sub(2));
+                        format!("{}{}▪", head, "•".repeat(hidden_len))
+                    }
+                };
+
+                // ── 构建内容行 ──
+                let mut ln: Vec<Line<'static>> = Vec::new();
+
+                // 模式条
+                {
+                    let f_mode = editor.field_focus == 4;
+                    let mode_label = if f_mode {
+                        format!(" ▎模式")
+                    } else {
+                        format!("  模式")
+                    };
+                    ln.push(Line::from(
+                        Span::from(mode_label)
+                            .fg(if f_mode { theme.accent } else { theme.text_dim })
+                            .bold(),
+                    ));
+                    ln.push(Line::from(vec![
+                        Span::from(format!("  {} 标准模式", if is_std { "◉" } else { "○" }))
+                            .fg(std_fg)
+                            .bold(),
+                        Span::from("  │  ").fg(theme.border_dim),
+                        Span::from(format!("{} 桥接模式", if !is_std { "◉" } else { "○" }))
+                            .fg(brg_fg)
+                            .bold(),
+                        Span::from(if !is_std { " 🔗" } else { "" }).fg(brg_fg),
+                    ]));
+                }
+
+                // 分隔线
+                ln.push(Line::from(
+                    Span::from(format!(" {}", rule)).fg(theme.border_dim),
+                ));
+
+                // 字段表单组
+                let field_defs: [(usize, &str, bool); 4] = [
+                    (0, "Provider ID", false),
+                    (1, "显示名称", false),
+                    (2, "Base URL", false),
+                    (3, "API Key", true),
+                ];
+                for &(fi, label, secret) in &field_defs {
+                    if secret && !is_std {
+                        continue;
+                    }
+                    let f = editor.field_focus == fi;
+                    let raw = match fi {
+                        0 => editor.draft.id.as_str(),
+                        1 => editor.draft.name.as_str(),
+                        2 => editor.draft.base_url.as_str(),
+                        3 => editor.draft.api_key.as_str(),
+                        _ => "",
+                    };
+                    let display = if secret && !raw.is_empty() {
+                        mask_secret(raw, value_w)
+                    } else {
+                        raw.to_string()
+                    };
+                    let cur = if f { "█" } else { " " };
+                    let label_text = if f {
+                        format!(" ▎{}", label)
+                    } else {
+                        format!("  {}", label)
+                    };
+                    ln.push(Line::from(
+                        Span::from(label_text)
+                            .fg(if f { theme.accent } else { theme.text_dim })
+                            .bold(),
+                    ));
+                    // 上边框
+                    ln.push(Line::from(vec![
+                        Span::from("  ┌").fg(theme.border_dim),
+                        Span::from(field_border.clone()).fg(theme.border_dim),
+                        Span::from("┐").fg(theme.border_dim),
+                    ]));
+                    // 内容行
+                    let value = pad_value(&format!("{}{}", display, cur), value_w);
+                    ln.push(Line::from(vec![
+                        Span::from("  │").fg(theme.border_dim),
+                        Span::from(value).fg(if raw.is_empty() {
+                            theme.border_dim
+                        } else {
+                            theme.text
+                        }),
+                        Span::from("│").fg(theme.border_dim),
+                    ]));
+                    // 下边框
+                    ln.push(Line::from(vec![
+                        Span::from("  └").fg(theme.border_dim),
+                        Span::from(field_border.clone()).fg(theme.border_dim),
+                        Span::from("┘").fg(theme.border_dim),
+                    ]));
+                }
+
+                // 模型
+                {
+                    let f = editor.field_focus == 5;
+                    let label_part = if f {
+                        format!(" ▎{}", "模型")
+                    } else {
+                        format!("  {}", "模型")
+                    };
+                    let cur = if f { "█" } else { "" };
+                    ln.push(Line::from(
+                        Span::from(format!(
+                            "{}（每行一个，格式：id:tier:contextWindow）",
+                            label_part
+                        ))
+                        .fg(if f { theme.accent } else { theme.text_dim })
+                        .bold(),
+                    ));
+                    let model_border = "─".repeat(value_w);
+                    ln.push(Line::from(vec![
+                        Span::from("  ┌").fg(theme.border_dim),
+                        Span::from(model_border.clone()).fg(theme.border_dim),
+                        Span::from("┐").fg(theme.border_dim),
+                    ]));
+                    if editor.models_fetching {
+                        let value = pad_value(&format!("⏳ 拉取模型列表中...{}", cur), value_w);
+                        ln.push(Line::from(vec![
+                            Span::from("  │").fg(theme.border_dim),
+                            Span::from(value).fg(theme.accent),
+                            Span::from("│").fg(theme.border_dim),
+                        ]));
+                    } else if editor.models_text.is_empty() {
+                        let value = pad_value(&format!("(空){}", cur), value_w);
+                        ln.push(Line::from(vec![
+                            Span::from("  │").fg(theme.border_dim),
+                            Span::from(value).fg(theme.border_dim),
+                            Span::from("│").fg(theme.border_dim),
+                        ]));
+                    } else if f {
+                        for line in editor.models_text.lines().take(3) {
+                            let value = pad_value(&format!("{}{}", line, cur), value_w);
+                            ln.push(Line::from(vec![
+                                Span::from("  │").fg(theme.border_dim),
+                                Span::from(value).fg(theme.text),
+                                Span::from("│").fg(theme.border_dim),
+                            ]));
+                        }
+                    } else {
+                        let first = editor.models_text.lines().next().unwrap_or("");
+                        let cnt = editor.models_text.lines().count();
+                        let t: String = first.chars().take(value_w.saturating_sub(10)).collect();
+                        let s = if cnt > 1 {
+                            format!("{}… (+{}行)", t, cnt - 1)
+                        } else {
+                            t.to_string()
+                        };
+                        let value = pad_value(&s, value_w);
+                        ln.push(Line::from(vec![
+                            Span::from("  │").fg(theme.border_dim),
+                            Span::from(value).fg(theme.text_dim),
+                            Span::from("│").fg(theme.border_dim),
+                        ]));
+                    }
+                    ln.push(Line::from(vec![
+                        Span::from("  └").fg(theme.border_dim),
+                        Span::from(model_border).fg(theme.border_dim),
+                        Span::from("┘").fg(theme.border_dim),
+                    ]));
+                }
+
+                // 底部分隔 + 操作栏
+                ln.push(Line::from(
+                    Span::from(format!(" {}", rule)).fg(theme.border_dim),
+                ));
+                let mode_hint = if editor.field_focus == 4 {
+                    "  [Space] 切换模式"
+                } else {
+                    ""
+                };
+                ln.push(Line::from(vec![
+                    Span::from(" "),
+                    Span::from("[✓ 保存]").fg(theme.heading).bold(),
+                    Span::from("  "),
+                    Span::from("[取消]").fg(theme.text),
+                    Span::from(format!(
+                        "{}  [Tab] 字段  [Enter] 保存  [Esc] 取消",
+                        mode_hint
+                    ))
+                    .fg(theme.text_dim),
+                ]));
+
+                // 动态高度
+                let content_h = ln.len() as u16;
+                let need_h = content_h.saturating_add(2);
+                let max_h = term_area.height.saturating_sub(4);
+                let popup_h = need_h.min(max_h).max(12);
+                let v_layout = ratatui::layout::Layout::vertical([
+                    ratatui::layout::Constraint::Fill(1),
+                    ratatui::layout::Constraint::Length(popup_h),
+                    ratatui::layout::Constraint::Fill(1),
+                ])
+                .split(term_area);
+                let h_layout = ratatui::layout::Layout::horizontal([
+                    ratatui::layout::Constraint::Fill(1),
+                    ratatui::layout::Constraint::Percentage(70),
+                    ratatui::layout::Constraint::Fill(1),
+                ])
+                .split(v_layout[1]);
+                let popup_area = h_layout[1];
+
+                let block = ratatui::widgets::Block::default()
+                    .title(title.clone())
+                    .borders(ratatui::widgets::Borders::ALL)
+                    .border_type(ratatui::widgets::BorderType::Plain)
+                    .border_style(theme.border);
+                let inner = block.inner(popup_area);
+
+                f.render_widget(Clear, popup_area);
+                f.render_widget(&block, popup_area);
+                f.render_widget(
+                    ratatui::widgets::Paragraph::new(ln)
+                        .style(ratatui::style::Style::default().bg(theme.bg)),
+                    inner,
+                );
+            }
+        }
+
+        // ── 模型管理弹窗（覆盖在表单之上）──
+        if let Some(ref editor) = self.tui.provider_editor {
+            if let Some(ref mgr) = editor.model_mgr {
+                use ratatui::style::Style;
+                use ratatui::widgets::{BorderType, Borders, Clear, List, ListItem, Paragraph};
+                let ta = f.area();
+                let mc = editor.draft.models.len();
+                let lh = (mc.saturating_add(4) as u16).clamp(6, 24);
+                let sh = lh.saturating_add(4).min(ta.height.saturating_sub(6));
+                let vl = ratatui::layout::Layout::vertical([
+                    ratatui::layout::Constraint::Fill(1),
+                    ratatui::layout::Constraint::Length(sh),
+                    ratatui::layout::Constraint::Fill(1),
+                ])
+                .split(ta);
+                let hl = ratatui::layout::Layout::horizontal([
+                    ratatui::layout::Constraint::Fill(1),
+                    ratatui::layout::Constraint::Percentage(55),
+                    ratatui::layout::Constraint::Fill(1),
+                ])
+                .split(vl[1]);
+                let sa = hl[1];
+                if let Some(ref fe) = mgr.editor {
+                    let eh = 14u16;
+                    let ev = ratatui::layout::Layout::vertical([
+                        ratatui::layout::Constraint::Fill(1),
+                        ratatui::layout::Constraint::Length(eh),
+                        ratatui::layout::Constraint::Fill(1),
+                    ])
+                    .split(sa);
+                    let ehl = ratatui::layout::Layout::horizontal([
+                        ratatui::layout::Constraint::Fill(1),
+                        ratatui::layout::Constraint::Percentage(65),
+                        ratatui::layout::Constraint::Fill(1),
+                    ])
+                    .split(ev[1]);
+                    let ea = ehl[1];
+                    let iw = ea.width.saturating_sub(2) as usize;
+                    let vw = iw.saturating_sub(8).max(16);
+                    let eb = "─".repeat(vw);
+                    let mut el: Vec<Line> = Vec::new();
+                    for &(fi, lbl) in &[(0, "ID"), (1, "Tier"), (2, "Context Window")] {
+                        let act = fe.field_focus == fi;
+                        let raw = match fi {
+                            0 => fe.draft_id.as_str(),
+                            1 => fe.draft_tier.as_str(),
+                            2 => fe.draft_ctx.as_str(),
+                            _ => "",
+                        };
+                        el.push(Line::from(
+                            Span::from(if act {
+                                format!(" ▎{}", lbl)
+                            } else {
+                                format!("  {}", lbl)
+                            })
+                            .fg(if act { theme.accent } else { theme.text_dim })
+                            .bold(),
+                        ));
+                        el.push(Line::from(vec![
+                            Span::from("  ┌").fg(theme.border_dim),
+                            Span::from(eb.clone()).fg(theme.border_dim),
+                            Span::from("┐").fg(theme.border_dim),
+                        ]));
+                        let cur = if act { "█" } else { "" };
+                        el.push(Line::from(vec![
+                            Span::from("  │").fg(theme.border_dim),
+                            Span::from(pad_value(&format!("{}{}", raw, cur), vw)).fg(
+                                if raw.is_empty() {
+                                    theme.border_dim
+                                } else {
+                                    theme.text
+                                },
+                            ),
+                            Span::from("│").fg(theme.border_dim),
+                        ]));
+                        el.push(Line::from(vec![
+                            Span::from("  └").fg(theme.border_dim),
+                            Span::from(eb.clone()).fg(theme.border_dim),
+                            Span::from("┘").fg(theme.border_dim),
+                        ]));
+                    }
+                    el.push(Line::from(Span::from(" ").fg(theme.border_dim)));
+                    el.push(Line::from(vec![
+                        Span::from(" [✓ 确认]").fg(theme.heading).bold(),
+                        Span::from("  [取消]").fg(theme.text),
+                        Span::from("  [Tab] 字段  [Enter] 确认  [Esc] 取消").fg(theme.text_dim),
+                    ]));
+                    let eb2 = ratatui::widgets::Block::default()
+                        .title(" ✎ 编辑模型 ")
+                        .borders(Borders::ALL)
+                        .border_type(BorderType::Plain)
+                        .border_style(theme.border);
+                    let ei = eb2.inner(ea);
+                    f.render_widget(Clear, ea);
+                    f.render_widget(&eb2, ea);
+                    f.render_widget(Paragraph::new(el).style(Style::default().bg(theme.bg)), ei);
+                } else {
+                    let sw = sa.width.saturating_sub(2) as usize;
+                    let svw = sw.saturating_sub(8).max(16);
+                    let mut si: Vec<ListItem> = Vec::new();
+                    for (i, m) in editor.draft.models.iter().enumerate() {
+                        let sel = i == mgr.cursor;
+                        let si2 = if sel { "▶" } else { " " };
+                        let ck = if m.enabled { "☑" } else { "☐" };
+                        let meta = format!("{} · {}", m.tier, m.context_window);
+                        let mw = meta.chars().count().min(svw.saturating_sub(4));
+                        let id =
+                            m.id.chars()
+                                .take(svw.saturating_sub(mw + 6))
+                                .collect::<String>();
+                        let pad = svw.saturating_sub(
+                            unicode_width::UnicodeWidthStr::width(id.as_str())
+                                .saturating_add(mw)
+                                .saturating_add(4),
+                        );
+                        let ls = format!(
+                            "{} {} {}{}{}{}",
+                            si2,
+                            ck,
+                            id,
+                            " ".repeat(pad),
+                            meta,
+                            if sel { " ◀" } else { "" }
+                        );
+                        let fc = if m.enabled {
+                            if sel {
+                                theme.accent
+                            } else {
+                                theme.text
+                            }
+                        } else {
+                            theme.text_dim
+                        };
+                        let st = if sel {
+                            Style::default().fg(fc).bg(theme.highlight_bg)
+                        } else {
+                            Style::default().fg(fc)
+                        };
+                        si.push(ListItem::new(Line::from(Span::from(ls).style(st))));
+                    }
+                    {
+                        let is_a = mgr.cursor == mc;
+                        let si2 = if is_a { "▶" } else { " " };
+                        si.push(ListItem::new(Line::from(
+                            Span::from(format!("{} + 添加模型", si2)).style(if is_a {
+                                Style::default().fg(theme.accent).bg(theme.highlight_bg)
+                            } else {
+                                Style::default().fg(theme.accent)
+                            }),
+                        )));
+                    }
+                    {
+                        let si2 = mc + 1;
+                        let is_s = mgr.cursor == si2;
+                        let si3 = if is_s { "▶" } else { " " };
+                        si.push(ListItem::new(Line::from(
+                            Span::from(format!("{} ✓ 保存并返回", si3))
+                                .style(if is_s {
+                                    Style::default().fg(theme.success).bg(theme.highlight_bg)
+                                } else {
+                                    Style::default().fg(theme.success)
+                                })
+                                .bold(),
+                        )));
+                    }
+                    let ec = editor.draft.models.iter().filter(|m| m.enabled).count();
+                    let sb2 = ratatui::widgets::Block::default()
+                        .title(format!(" 管理模型  ({}/{}) ", ec, mc))
+                        .borders(Borders::ALL)
+                        .border_type(BorderType::Plain)
+                        .border_style(theme.border);
+                    let si2 = sb2.inner(sa);
+                    f.render_widget(Clear, sa);
+                    f.render_widget(&sb2, sa);
+                    f.render_widget(List::new(si), si2);
+                    if si2.height > 3 {
+                        let fy = si2.y + si2.height - 1;
+                        f.render_widget(
+                            Paragraph::new(Line::from(
+                                Span::from("  ↑↓ Space 开关  Enter 编辑/保存  Del 删除  Esc 返回")
+                                    .fg(theme.text_dim),
+                            )),
+                            Rect::new(si2.x, fy, si2.width, 1),
+                        );
+                    }
+                }
+            }
         }
 
         // 渲染后将组件中收集的选中文本同步回主 selection
@@ -1118,7 +2105,11 @@ impl App {
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("?")
                                 .to_string();
-                            mcps.push(McpInfo { name: name.clone(), command, tool_count: 0 });
+                            mcps.push(McpInfo {
+                                name: name.clone(),
+                                command,
+                                tool_count: 0,
+                            });
                         }
                     }
                 }
@@ -1376,8 +2367,8 @@ fn pi_sessions_dir() -> std::path::PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
     use tokio::sync::mpsc;
 
     use super::*;
@@ -1447,24 +2438,21 @@ mod tests {
         // RED: handle_provider_key 还不存在，因此需要先写测试
         // 期望：在 Provider section 按下 Enter 时 provider_popup 变为 Some(0)
         let mut state = TuiState::new();
-        state.providers = vec![
-            crate::provider::ProviderInfo {
-                id: "deepseek".into(),
-                name: "DeepSeek".into(),
-                bridge: false,
-                base_url: "https://api.deepseek.com/v1".into(),
-                api_key: "sk-test".into(),
-                models: vec![
-                    crate::provider::ModelInfo {
-                        id: "deepseek-chat".into(),
-                        name: "DeepSeek Chat".into(),
-                        context_window: 64000,
-                        reasoning: false,
-                        tier: "T2".into(),
-                    },
-                ],
-            },
-        ];
+        state.providers = vec![crate::provider::ProviderInfo {
+            id: "deepseek".into(),
+            name: "DeepSeek".into(),
+            bridge: false,
+            base_url: "https://api.deepseek.com/v1".into(),
+            api_key: "sk-test".into(),
+            models: vec![crate::provider::ModelInfo {
+                id: "deepseek-chat".into(),
+                name: "DeepSeek Chat".into(),
+                context_window: 64000,
+                reasoning: false,
+                tier: "T2".into(),
+                enabled: true,
+            }],
+        }];
         state.focus_panel = FocusPanel::Sidebar;
         state.sidebar_subsection = SidebarSubsection::Provider;
         state.selecting_model = false;
@@ -1473,11 +2461,13 @@ mod tests {
 
         state.handle_provider_key(crossterm::event::KeyCode::Enter);
 
-        assert_eq!(
-            state.provider_popup,
-            Some(0),
-            "Enter 应该打开 provider popup (idx=0)"
-        );
+        let editor = state
+            .provider_editor
+            .as_ref()
+            .expect("Enter 应该打开 Provider 编辑表单");
+        assert!(!editor.is_new, "编辑已有 provider 时 is_new 应为 false");
+        assert_eq!(editor.draft.id, "deepseek", "编辑表单应预填充 provider 数据");
+        assert_eq!(state.provider_popup, None, "不应同时打开 popup");
     }
 
     #[test]
@@ -1492,8 +2482,7 @@ mod tests {
         state.handle_provider_key(crossterm::event::KeyCode::Enter);
 
         assert_eq!(
-            state.provider_popup,
-            None,
+            state.provider_popup, None,
             "无 provider 时 Enter 不应打开 popup"
         );
     }
@@ -1501,16 +2490,14 @@ mod tests {
     #[test]
     fn test_provider_popup_esc_closes() {
         let mut state = TuiState::new();
-        state.providers = vec![
-            crate::provider::ProviderInfo {
-                id: "deepseek".into(),
-                name: "DeepSeek".into(),
-                bridge: false,
-                base_url: "https://api.deepseek.com/v1".into(),
-                api_key: "sk-test".into(),
-                models: vec![],
-            },
-        ];
+        state.providers = vec![crate::provider::ProviderInfo {
+            id: "deepseek".into(),
+            name: "DeepSeek".into(),
+            bridge: false,
+            base_url: "https://api.deepseek.com/v1".into(),
+            api_key: "sk-test".into(),
+            models: vec![],
+        }];
         state.focus_panel = FocusPanel::Sidebar;
         state.sidebar_subsection = SidebarSubsection::Provider;
         state.provider_popup = Some(0);
@@ -1524,31 +2511,31 @@ mod tests {
     fn test_provider_popup_enter_activates_first_model() {
         let mut state = TuiState::new();
         state.current_model = "old-model".into();
-        state.providers = vec![
-            crate::provider::ProviderInfo {
-                id: "deepseek".into(),
-                name: "DeepSeek".into(),
-                bridge: false,
-                base_url: "https://api.deepseek.com/v1".into(),
-                api_key: "sk-test".into(),
-                models: vec![
-                    crate::provider::ModelInfo {
-                        id: "deepseek-chat".into(),
-                        name: "DeepSeek Chat".into(),
-                        context_window: 64000,
-                        reasoning: false,
-                        tier: "T2".into(),
-                    },
-                ],
-            },
-        ];
+        state.providers = vec![crate::provider::ProviderInfo {
+            id: "deepseek".into(),
+            name: "DeepSeek".into(),
+            bridge: false,
+            base_url: "https://api.deepseek.com/v1".into(),
+            api_key: "sk-test".into(),
+            models: vec![crate::provider::ModelInfo {
+                id: "deepseek-chat".into(),
+                name: "DeepSeek Chat".into(),
+                context_window: 64000,
+                reasoning: false,
+                tier: "T2".into(),
+                enabled: true,
+            }],
+        }];
         state.focus_panel = FocusPanel::Sidebar;
         state.sidebar_subsection = SidebarSubsection::Provider;
         state.provider_popup = Some(0);
 
         // Enter 激活第一个 model
         state.handle_provider_key(crossterm::event::KeyCode::Enter);
-        assert_eq!(state.current_model, "deepseek-chat", "Enter 应激活第一个 model");
+        assert_eq!(
+            state.current_model, "deepseek-chat",
+            "Enter 应激活第一个 model"
+        );
         assert_eq!(state.provider_popup, None, "激活后 popup 应关闭");
     }
 
@@ -1557,18 +2544,27 @@ mod tests {
         let mut state = TuiState::new();
         state.providers = vec![
             crate::provider::ProviderInfo {
-                id: "a".into(), name: "A".into(),
-                bridge: false, base_url: "".into(), api_key: "".into(),
+                id: "a".into(),
+                name: "A".into(),
+                bridge: false,
+                base_url: "".into(),
+                api_key: "".into(),
                 models: vec![],
             },
             crate::provider::ProviderInfo {
-                id: "b".into(), name: "B".into(),
-                bridge: false, base_url: "".into(), api_key: "".into(),
+                id: "b".into(),
+                name: "B".into(),
+                bridge: false,
+                base_url: "".into(),
+                api_key: "".into(),
                 models: vec![],
             },
             crate::provider::ProviderInfo {
-                id: "c".into(), name: "C".into(),
-                bridge: false, base_url: "".into(), api_key: "".into(),
+                id: "c".into(),
+                name: "C".into(),
+                bridge: false,
+                base_url: "".into(),
+                api_key: "".into(),
                 models: vec![],
             },
         ];
@@ -1584,9 +2580,17 @@ mod tests {
         state.handle_provider_key(crossterm::event::KeyCode::Down);
         assert_eq!(state.provider_cursor, 2, "Down 应移动到第三个 provider");
 
-        // Down → stays at 2 (end of list)
+        // Down → cursor=3 (add provider row)
         state.handle_provider_key(crossterm::event::KeyCode::Down);
-        assert_eq!(state.provider_cursor, 2, "Down 在末尾不应越界");
+        assert_eq!(state.provider_cursor, 3, "Down 应到 add provider 行");
+
+        // Down → stays at 3 (end of list)
+        state.handle_provider_key(crossterm::event::KeyCode::Down);
+        assert_eq!(state.provider_cursor, 3, "Down 在末尾不应越界");
+
+        // Up → cursor=2
+        state.handle_provider_key(crossterm::event::KeyCode::Up);
+        assert_eq!(state.provider_cursor, 2, "Up 应回到第三个");
 
         // Up → cursor=1
         state.handle_provider_key(crossterm::event::KeyCode::Up);
@@ -1605,22 +2609,31 @@ mod tests {
     fn test_provider_enter_selects_then_opens_model_popup() {
         let mut state = TuiState::new();
         state.current_model = "old".into();
-        state.providers = vec![
-            crate::provider::ProviderInfo {
-                id: "ds".into(), name: "DS".into(),
-                bridge: false, base_url: "".into(), api_key: "".into(),
-                models: vec![
-                    crate::provider::ModelInfo {
-                        id: "m1".into(), name: "M1".into(),
-                        context_window: 1000, reasoning: false, tier: "T1".into(),
-                    },
-                    crate::provider::ModelInfo {
-                        id: "m2".into(), name: "M2".into(),
-                        context_window: 2000, reasoning: true, tier: "T2".into(),
-                    },
-                ],
-            },
-        ];
+        state.providers = vec![crate::provider::ProviderInfo {
+            id: "ds".into(),
+            name: "DS".into(),
+            bridge: false,
+            base_url: "".into(),
+            api_key: "".into(),
+            models: vec![
+                crate::provider::ModelInfo {
+                    id: "m1".into(),
+                    name: "M1".into(),
+                    context_window: 1000,
+                    reasoning: false,
+                    tier: "T1".into(),
+                    enabled: true,
+                },
+                crate::provider::ModelInfo {
+                    id: "m2".into(),
+                    name: "M2".into(),
+                    context_window: 2000,
+                    reasoning: true,
+                    tier: "T2".into(),
+                    enabled: true,
+                },
+            ],
+        }];
         state.focus_panel = FocusPanel::Sidebar;
         state.sidebar_subsection = SidebarSubsection::Provider;
         state.selecting_model = false;
@@ -1635,9 +2648,15 @@ mod tests {
         state.handle_provider_key(crossterm::event::KeyCode::Down);
         assert_eq!(state.model_cursor, 1, "Down 应移动到第二个 model");
 
-        // Enter 选中 model + 打开 popup
+        // Enter 选中 model + 打开编辑表单
         state.handle_provider_key(crossterm::event::KeyCode::Enter);
         assert_eq!(state.current_model, "m2", "Enter 应切换到选中的 model");
-        assert_eq!(state.provider_popup, Some(0), "Enter 应同时打开 provider popup");
+        assert!(!state.selecting_model, "Enter 后应退出模型选择模式");
+        let editor = state
+            .provider_editor
+            .as_ref()
+            .expect("Enter 应打开 Provider 编辑表单");
+        assert!(!editor.is_new, "编辑已有 provider 时 is_new 应为 false");
+        assert_eq!(state.provider_popup, None, "不应再打开 popup");
     }
 }

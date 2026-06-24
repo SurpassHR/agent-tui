@@ -3,10 +3,10 @@
 //! TUI 内嵌 axum HTTP 服务器，将 pi 的请求按 model 路由到对应后端。
 //! 支持标准模式（按 model 字段路由）和桥接模式（透传）。
 
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use serde::{Deserialize, Serialize};
 
 pub mod router;
 
@@ -22,7 +22,9 @@ pub struct ProviderConfig {
     pub providers: Vec<ProviderInfo>,
 }
 
-fn default_port() -> u16 { 8001 }
+fn default_port() -> u16 {
+    8001
+}
 
 /// Provider 定义
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,23 +59,31 @@ pub struct ModelInfo {
     /// 模型分级：T1 / T2 / T3
     #[serde(default = "default_tier")]
     pub tier: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
 }
 
-fn default_tier() -> String { "T2".to_string() }
+fn default_true() -> bool {
+    true
+}
 
-fn default_context_window() -> u32 { 128000 }
+fn default_tier() -> String {
+    "T2".to_string()
+}
+
+fn default_context_window() -> u32 {
+    128000
+}
 
 impl ProviderConfig {
     /// 加载配置文件
     pub fn load(path: &PathBuf) -> Self {
         if path.exists() {
             match std::fs::read_to_string(path) {
-                Ok(content) => {
-                    match serde_json::from_str(&content) {
-                        Ok(cfg) => return cfg,
-                        Err(e) => tracing::warn!("providers.json parse error: {} — 使用默认配置", e),
-                    }
-                }
+                Ok(content) => match serde_json::from_str(&content) {
+                    Ok(cfg) => return cfg,
+                    Err(e) => tracing::warn!("providers.json parse error: {} — 使用默认配置", e),
+                },
                 Err(e) => tracing::warn!("providers.json read error: {} — 使用默认配置", e),
             }
         }
@@ -120,7 +130,9 @@ impl ProviderConfig {
         if let Some(bridge) = self.providers.iter().find(|p| p.bridge) {
             return Some(bridge);
         }
-        self.providers.iter().find(|p| p.models.iter().any(|m| m.id == model))
+        self.providers
+            .iter()
+            .find(|p| p.models.iter().any(|m| m.id == model))
     }
 }
 
@@ -158,12 +170,14 @@ impl Default for ProviderConfig {
 /// 生成 local-provider.ts 内容
 pub fn generate_local_provider_ts(config: &ProviderConfig, port: u16) -> String {
     let mut s = String::new();
-    s.push_str(r#"import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+    s.push_str(
+        r#"import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { randomUUID } from "node:crypto";
 import { writeFileSync, existsSync } from "node:fs";
 
 export default async function (pi: ExtensionAPI) {
-"#);
+"#,
+    );
 
     // 注册 provider
     s.push_str(&format!("  pi.registerProvider(\"local\", {{\n    baseUrl: \"http://127.0.0.1:{}/v1\",\n    apiKey: \"LOCAL_API_KEY\",\n    api: \"openai-completions\",\n    headers: {{\n      \"X-Session-Id\": \"!cat /tmp/pi-session-id\",\n    }},\n    compat: {{\n      supportsDeveloperRole: true,\n      supportsReasoningEffort: true,\n    }},\n    models: [\n", port));
@@ -178,7 +192,8 @@ export default async function (pi: ExtensionAPI) {
         }
     }
 
-    s.push_str(r#"    ],
+    s.push_str(
+        r#"    ],
   });
 
   const SESSION_FILE = "/tmp/pi-session-id";
@@ -193,7 +208,91 @@ export default async function (pi: ExtensionAPI) {
     writeFileSync(SESSION_FILE, sessionId);
   });
 }
-"#);
+"#,
+    );
 
     s
+}
+
+/// 从 /v1/models 接口拉取模型列表，返回 id:tier:contextWindow 格式文本
+pub async fn fetch_models_list(base_url: &str, api_key: &str) -> Option<String> {
+    let url = format!("{}/v1/models", base_url.trim_end_matches('/'));
+    let client = match reqwest::Client::builder()
+        .user_agent("Mozilla/5.0 (compatible; agent-tui/0.1)")
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("创建 HTTP 客户端失败: {}", e);
+            return None;
+        }
+    };
+    let resp = match client
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!("请求 /v1/models 失败: {}", e);
+            return None;
+        }
+    };
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if !ct.contains("json") {
+        tracing::warn!(
+            "/v1/models 返回非 JSON 响应 (Content-Type: {})，可能是反爬/认证页面",
+            ct
+        );
+        return None;
+    }
+    let body: serde_json::Value = match resp.text().await {
+        Ok(t) => match serde_json::from_str(&t) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(
+                    "解析 /v1/models 响应失败: {} — 原始: {}",
+                    e,
+                    &t[..t.len().min(200)]
+                );
+                return None;
+            }
+        },
+        Err(e) => {
+            tracing::warn!("读取 /v1/models 响应失败: {}", e);
+            return None;
+        }
+    };
+    let models: Option<&Vec<serde_json::Value>> = body
+        .get("data")
+        .and_then(|d| d.as_array())
+        .or_else(|| body.get("models").and_then(|m| m.as_array()))
+        .or_else(|| body.as_array());
+    let models = match models {
+        Some(arr) if !arr.is_empty() => arr,
+        _ => {
+            tracing::warn!("/v1/models 响应无法解析模型列表");
+            return None;
+        }
+    };
+    let lines: Vec<String> = models
+        .iter()
+        .filter_map(|m| {
+            m.get("id")
+                .and_then(|v| v.as_str())
+                .or_else(|| m.get("name").and_then(|v| v.as_str()))
+                .or_else(|| m.get("model").and_then(|v| v.as_str()))
+        })
+        .map(|id| format!("{}:T2:128000", id))
+        .collect();
+    if lines.is_empty() {
+        return None;
+    }
+    Some(lines.join("\n"))
 }

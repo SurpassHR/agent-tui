@@ -239,19 +239,30 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
 
         // 生成 local-provider.ts
         let ts_content = crate::provider::generate_local_provider_ts(
-            &*shared.read().await, shared.read().await.port
+            &*shared.read().await,
+            shared.read().await.port,
         );
         // 写入 pi extensions 目录
         let pi_home = std::env::var("PI_CODING_AGENT_DIR")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|_| {
-                std::env::var("HOME").map(|h| std::path::PathBuf::from(h).join(".pi").join("agent"))
+                std::env::var("HOME")
+                    .map(|h| std::path::PathBuf::from(h).join(".pi").join("agent"))
                     .unwrap_or_default()
             });
         let ext_dir = pi_home.join("extensions");
         let _ = std::fs::create_dir_all(&ext_dir);
         let _ = std::fs::write(ext_dir.join("local-provider.ts"), &ts_content);
-        tracing::info!("local-provider.ts generated with {} models", shared.read().await.providers.iter().map(|p| p.models.len()).sum::<usize>());
+        tracing::info!(
+            "local-provider.ts generated with {} models",
+            shared
+                .read()
+                .await
+                .providers
+                .iter()
+                .map(|p| p.models.len())
+                .sum::<usize>()
+        );
 
         // 启动 axum router
         let router_shared = shared.clone();
@@ -295,6 +306,30 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                 }
                 // 同步输入缓冲区到 main_view
                 app.tui.main_view.input_buffer.clone_from(&input_buffer);
+                // 检查模型列表拉取结果
+                if let Some(mut rx) = app.tui.models_fetch_rx.take() {
+                    match rx.try_recv() {
+                        Ok(Some(models_text)) => {
+                            if let Some(ref mut editor) = app.tui.provider_editor {
+                                editor.models_text = models_text;
+                                editor.models_fetching = false;
+                            }
+                        }
+                        Ok(None) => {
+                            if let Some(ref mut editor) = app.tui.provider_editor {
+                                editor.models_fetching = false;
+                            }
+                        }
+                        Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
+                            app.tui.models_fetch_rx = Some(rx);
+                        }
+                        Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                            if let Some(ref mut editor) = app.tui.provider_editor {
+                                editor.models_fetching = false;
+                            }
+                        }
+                    }
+                }
                 // 渲染
                 let _ = terminal.try_draw(|f| {
                     app.render_tui(f);
@@ -487,9 +522,22 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                             app.agent_status = AgentStatus::Idle;
                         }
 
-                        // Esc: 关闭 Popup
+                        // Esc: 关闭 Popup / 编辑表单
                         crossterm::event::KeyCode::Esc => {
-                            if app.tui.provider_popup.is_some() {
+                            if app.tui.provider_editor.is_some() {
+                                let has_mgr = app
+                                    .tui
+                                    .provider_editor
+                                    .as_ref()
+                                    .map(|e| e.model_mgr.is_some())
+                                    .unwrap_or(false);
+                                if has_mgr {
+                                    // model_mgr 打开时，Esc 先关闭它
+                                    app.tui.handle_provider_key(key.code);
+                                } else {
+                                    app.tui.provider_editor = None;
+                                }
+                            } else if app.tui.provider_popup.is_some() {
                                 app.tui.provider_popup = None;
                             } else if app.tui.popup.visible {
                                 app.tui.popup.visible = false;
@@ -544,6 +592,23 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                                 == crate::app::SidebarSubsection::Provider =>
                         {
                             app.tui.handle_provider_key(key.code);
+                            // 检查是否需要自动拉取模型列表
+                            if let Some(ref editor) = app.tui.provider_editor {
+                                if editor.models_fetching && app.tui.models_fetch_rx.is_none() {
+                                    let base_url = editor.draft.base_url.trim().to_string();
+                                    let api_key = editor.draft.api_key.trim().to_string();
+                                    if !base_url.is_empty() && !api_key.is_empty() {
+                                        let (tx, rx) = tokio::sync::oneshot::channel();
+                                        app.tui.models_fetch_rx = Some(rx);
+                                        tokio::spawn(async move {
+                                            let result =
+                                                crate::provider::fetch_models_list(&base_url, &api_key)
+                                                    .await;
+                                            let _ = tx.send(result);
+                                        });
+                                    }
+                                }
+                            }
                         }
 
                         _ if *focus == crate::app::FocusPanel::MainView
