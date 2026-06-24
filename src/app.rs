@@ -627,7 +627,6 @@ impl TuiState {
             .iter()
             .filter(|p| p.enabled)
             .find(|p| p.models.iter().any(|m| m.id == self.current_model))
-            .or_else(|| self.providers.iter().find(|p| p.enabled))
     }
 
     fn handle_provider_editor_key(&mut self, key: crossterm::event::KeyCode) -> bool {
@@ -2920,7 +2919,7 @@ mod tests {
     #[test]
     fn test_model_nav_down_up_enter() {
         let mut state = TuiState::new();
-        state.current_model = String::new(); // 空 = 使用第一个 provider
+        state.current_model = "m1".to_string(); // 预设当前模型
         state.providers = vec![crate::provider::ProviderInfo {
             id: "ds".into(),
             name: "DS".into(),

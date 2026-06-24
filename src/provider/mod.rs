@@ -123,14 +123,13 @@ impl ProviderConfig {
                 }
             }
         }
-        // 回退到第一个启用的 provider
-        self.providers.iter().find(|p| p.enabled)
+        None
     }
 
     /// 根据 model id 查找 provider
     pub fn find_provider_by_model(&self, model: &str) -> Option<&ProviderInfo> {
         // bridge 模式直接返回第一个 bridge provider
-        if let Some(bridge) = self.providers.iter().find(|p| p.bridge) {
+        if let Some(bridge) = self.providers.iter().find(|p| p.bridge && p.enabled) {
             return Some(bridge);
         }
         self.providers

@@ -275,8 +275,7 @@ impl Sidebar {
             }
         } else {
             for (i, p) in self.providers.iter().enumerate() {
-                let is_active = p.models.iter().any(|m| m.id == self.current_model)
-                    || (self.current_model.is_empty() && i == 0);
+                let is_active = p.models.iter().any(|m| m.id == self.current_model);
                 let is_provider_selected = is_on_providers && i == self.provider_cursor;
                 let (fg, bg) = if is_provider_selected {
                     (theme.selection_fg, theme.highlight_bg)
