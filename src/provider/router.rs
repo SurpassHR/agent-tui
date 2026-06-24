@@ -77,9 +77,16 @@ async fn handle_chat_completions(
     let provider = match provider {
         Some(p) => p.clone(),
         None => {
+            tracing::warn!("收到 POST /v1/chat/completions — 无可用 provider");
             return (StatusCode::NOT_FOUND, "{\"error\":\"no active provider\"}").into_response();
         }
     };
+
+    tracing::info!(
+        "收到 POST /v1/chat/completions | provider={} mode={}",
+        provider.id,
+        if provider.bridge { "bridge" } else { "standard" }
+    );
 
     if provider.bridge {
         // 桥接模式：纯透传
@@ -99,6 +106,7 @@ async fn handle_chat_completions(
 
 /// GET /v1/models
 async fn handle_models(State(state): State<Arc<AppState>>) -> Response {
+    tracing::debug!("收到 GET /v1/models");
     let config = state.config.read().await;
 
     // 桥接模式：返回空列表（bridge 自己管理模型）
@@ -152,7 +160,10 @@ async fn bridge_proxy(
     body: Body,
 ) -> Response {
     let target_url = format!("{}{}", base_url.trim_end_matches('/'), path);
-    proxy_request(client, &target_url, body).await
+    tracing::debug!("POST {} → bridge 透传", target_url);
+    let response = proxy_request(client, &target_url, body).await;
+    tracing::debug!("POST {} — 上游响应完成", target_url);
+    response
 }
 
 /// 标准模式代理：读 model 字段 → 匹配 provider → 转发 + 注入 API key
@@ -192,6 +203,7 @@ async fn standard_chat_proxy(
     let target = match target {
         Some(p) => p.clone(),
         None => {
+            tracing::warn!("POST /v1/chat/completions — model={} 未匹配到 provider", model);
             return (
                 StatusCode::NOT_FOUND,
                 format!("{{\"error\":\"unknown model: {}\"}}", model),
@@ -203,6 +215,13 @@ async fn standard_chat_proxy(
     let target_url = format!(
         "{}/v1/chat/completions",
         target.base_url.trim_end_matches('/')
+    );
+
+    tracing::info!(
+        "POST /v1/chat/completions — model={} → provider={} → {}",
+        model,
+        target.id,
+        target_url,
     );
 
     // 构造转发请求
@@ -217,9 +236,17 @@ async fn standard_chat_proxy(
 
     req_builder = req_builder.body(bytes.to_vec());
 
+    let upstream_start = std::time::Instant::now();
     match req_builder.send().await {
         Ok(resp) => {
             let status = resp.status();
+            let elapsed = upstream_start.elapsed();
+            tracing::info!(
+                "POST {} — 上游响应 status={} 耗时={}ms",
+                target_url,
+                status.as_u16(),
+                elapsed.as_millis(),
+            );
             let headers = resp.headers().clone();
             let stream = resp.bytes_stream();
 
@@ -239,11 +266,20 @@ async fn standard_chat_proxy(
 
             (status, response_headers, streaming_body).into_response()
         }
-        Err(e) => (
-            StatusCode::BAD_GATEWAY,
-            format!("{{\"error\":\"upstream error: {}\"}}", e),
-        )
-            .into_response(),
+        Err(e) => {
+            let elapsed = upstream_start.elapsed();
+            tracing::error!(
+                "POST {} — 上游请求失败 耗时={}ms: {}",
+                target_url,
+                elapsed.as_millis(),
+                e,
+            );
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("{{\"error\":\"upstream error: {}\"}}", e),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -274,6 +310,11 @@ async fn proxy_request(client: &Client, target_url: &str, body: Body) -> Respons
     match req_builder.send().await {
         Ok(resp) => {
             let status = resp.status();
+            tracing::info!(
+                "POST {} — 上游响应 status={}",
+                target_url,
+                status.as_u16(),
+            );
             let headers = resp.headers().clone();
             let stream = resp.bytes_stream();
 
@@ -295,10 +336,13 @@ async fn proxy_request(client: &Client, target_url: &str, body: Body) -> Respons
             )
                 .into_response()
         }
-        Err(e) => (
-            StatusCode::BAD_GATEWAY,
-            format!("{{\"error\":\"upstream error: {}\"}}", e),
-        )
-            .into_response(),
+        Err(e) => {
+            tracing::error!("POST {} — 上游请求失败: {}", target_url, e);
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("{{\"error\":\"upstream error: {}\"}}", e),
+            )
+                .into_response()
+        }
     }
 }

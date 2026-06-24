@@ -189,6 +189,90 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
     }
 
     tracing::info!("pi 已安装: {:?}", pi_version);
+
+    // ============================================================
+    // 先启动 Provider Router + 生成 local-provider.ts
+    // 必须在 pi 启动之前完成，否则 pi 加载扩展时找不到 local provider
+    // ============================================================
+    let (router_port, _) = {
+        let config_path = crate::provider::config_path();
+        let provider_cfg = crate::provider::ProviderConfig::load(&config_path);
+        app.tui.providers.clone_from(&provider_cfg.providers);
+        if let Some(ref m) = provider_cfg.current_model {
+            app.tui.current_model.clone_from(m);
+        }
+        let initial_port = provider_cfg.port;
+        let shared = crate::provider::SharedConfig::new(tokio::sync::RwLock::new(provider_cfg));
+
+        // 生成 local-provider.ts（必须在 pi 启动前写入）
+        let ts_content = crate::provider::generate_local_provider_ts(
+            &*shared.read().await,
+            shared.read().await.port,
+        );
+        let pi_home = std::env::var("PI_CODING_AGENT_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| {
+                std::env::var("HOME")
+                    .map(|h| std::path::PathBuf::from(h).join(".pi").join("agent"))
+                    .unwrap_or_default()
+            });
+        let ext_dir = pi_home.join("extensions");
+        let _ = std::fs::create_dir_all(&ext_dir);
+        let _ = std::fs::write(ext_dir.join("local-provider.ts"), &ts_content);
+        let model_count: usize = shared
+            .read()
+            .await
+            .providers
+            .iter()
+            .map(|p| p.models.len())
+            .sum();
+        tracing::info!("local-provider.ts generated with {} models", model_count);
+
+        // 启动 axum router
+        let router_shared = shared.clone();
+        let (port_tx, mut port_rx) = tokio::sync::oneshot::channel::<u16>();
+        app.tui.router_running = true;
+        tokio::spawn(async move {
+            match crate::provider::router::start_router(router_shared).await {
+                Ok(actual_port) => {
+                    tracing::info!("Provider router started on port {}", actual_port);
+                    let _ = port_tx.send(actual_port);
+                }
+                Err(e) => {
+                    tracing::error!("Provider router failed: {}", e);
+                }
+            }
+        });
+        // 给 axum 一点时间绑定端口
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let actual_port = match port_rx.try_recv() {
+            Ok(p) => p,
+            _ => initial_port,
+        };
+        (actual_port, shared)
+    };
+
+    app.tui.router_port = router_port;
+
+    // 自检：验证 router 是否可达
+    {
+        let test_url = format!("http://127.0.0.1:{}/v1/models", router_port);
+        match reqwest::get(&test_url).await {
+            Ok(resp) => {
+                tracing::info!(
+                    "Router 自检通过: GET /v1/models → status={}",
+                    resp.status().as_u16()
+                );
+            }
+            Err(e) => {
+                tracing::error!("Router 自检失败: {} — pi 将无法使用 TUI 路由", e);
+            }
+        }
+    }
+
+    // ============================================================
+    // 启动 pi（此时 local-provider.ts 已就绪）
+    // ============================================================
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let mut backend = PiRpcBackend::new("pi", &cwd);
     let mut client = match backend.start(None).await {
@@ -218,6 +302,21 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
 
     app.agent_status = AgentStatus::Idle;
 
+    // 启动后立即发送初始模型（否则 pi 不知道用哪个模型）
+    let initial_model = app.tui.current_model.clone();
+    if !initial_model.is_empty() {
+        tracing::info!("发送初始模型: {}", initial_model);
+        let _ = client
+            .notify(serde_json::json!({
+                "type": "set_model",
+                "provider": "local",
+                "modelId": initial_model,
+            }))
+            .await;
+    } else {
+        tracing::warn!("无初始模型 — 请在 MODEL 区选择一个模型");
+    }
+
     // 扫描 session 目录，填充工作区数据
     app.populate_workspaces();
     // 扫描 agents 目录，填充 subagent 列表
@@ -226,68 +325,6 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
     app.populate_skills();
     // 扫描 mcp.json，填充 MCP server 列表
     app.populate_mcps();
-
-    // 启动 Provider Router
-    {
-        let config_path = crate::provider::config_path();
-        let provider_cfg = crate::provider::ProviderConfig::load(&config_path);
-        app.tui.providers.clone_from(&provider_cfg.providers);
-        if let Some(ref m) = provider_cfg.current_model {
-            app.tui.current_model.clone_from(m);
-        }
-        let initial_port = provider_cfg.port;
-        let shared = crate::provider::SharedConfig::new(tokio::sync::RwLock::new(provider_cfg));
-
-        // 生成 local-provider.ts
-        let ts_content = crate::provider::generate_local_provider_ts(
-            &*shared.read().await,
-            shared.read().await.port,
-        );
-        // 写入 pi extensions 目录
-        let pi_home = std::env::var("PI_CODING_AGENT_DIR")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|_| {
-                std::env::var("HOME")
-                    .map(|h| std::path::PathBuf::from(h).join(".pi").join("agent"))
-                    .unwrap_or_default()
-            });
-        let ext_dir = pi_home.join("extensions");
-        let _ = std::fs::create_dir_all(&ext_dir);
-        let _ = std::fs::write(ext_dir.join("local-provider.ts"), &ts_content);
-        tracing::info!(
-            "local-provider.ts generated with {} models",
-            shared
-                .read()
-                .await
-                .providers
-                .iter()
-                .map(|p| p.models.len())
-                .sum::<usize>()
-        );
-
-        // 启动 axum router（通过 oneshot 传回实际绑定的端口）
-        let router_shared = shared.clone();
-        let (port_tx, mut port_rx) = tokio::sync::oneshot::channel::<u16>();
-        app.tui.router_running = true;
-        tokio::spawn(async move {
-            match crate::provider::router::start_router(router_shared).await {
-                Ok(actual_port) => {
-                    tracing::info!("Provider router started on port {}", actual_port);
-                    let _ = port_tx.send(actual_port);
-                }
-                Err(e) => {
-                    tracing::error!("Provider router failed: {}", e);
-                }
-            }
-        });
-        // 给 axum 一点时间绑定端口
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        // 获取实际端口（超时后 fallback 到配置中的初始端口）
-        app.tui.router_port = match port_rx.try_recv() {
-            Ok(p) => p,
-            _ => initial_port,
-        };
-    }
 
     let agent_id = app.active_agent.clone().unwrap_or_default();
     let mut input_buffer = String::new();

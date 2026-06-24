@@ -184,9 +184,10 @@ export default async function (pi: ExtensionAPI) {
 
     for p in &config.providers {
         for m in &p.models {
+            let display_name = if m.name.is_empty() { &m.id } else { &m.name };
             s.push_str(&format!(
-                r#"      {{ id: "{}", name: "{}", reasoning: {}, contextWindow: {}, cost: {{ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }} }},"#,
-                m.id, m.name, m.reasoning, m.context_window
+                r#"      {{ id: "{}", name: "{}", reasoning: {}, contextWindow: {}, input: ["text"], cost: {{ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }} }},"#,
+                m.id, display_name, m.reasoning, m.context_window
             ));
             s.push('\n');
         }
