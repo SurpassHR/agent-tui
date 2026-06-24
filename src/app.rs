@@ -2802,6 +2802,10 @@ impl App {
                         }
                         Err(e) => {
                             tracing::warn!("恢复会话消息失败: {} — {}", path, e);
+                            // 加载失败时仍设置 active_agent 和同步组件以保持 UI 一致
+                            self.active_agent = Some(session_id.clone());
+                            self.session.id = session_id.clone();
+                            self.sync_components();
                         }
                     }
                 }
