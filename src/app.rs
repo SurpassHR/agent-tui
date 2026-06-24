@@ -40,7 +40,10 @@ pub enum RenameState {
 }
 #[derive(Debug, Clone)]
 pub struct WorkspaceNode {
-    pub name: String,
+    /// 工作区对应的实际文件系统路径（从 JSONL cwd 字段提取）
+    pub cwd: String,
+    /// 侧边栏显示名称（取 cwd 最后一级，重名时自动加父级）
+    pub display_name: String,
     pub sessions: Vec<SessionNode>,
     pub expanded: bool,
 }
@@ -1592,17 +1595,23 @@ impl App {
             },
 
             // --- 工作区 CRUD ---
-            Action::CreateWorkspace(ref name) => {
-                let encoded = encode_workspace_name(name);
-                let sessions_dir = pi_sessions_dir();
-                let ws_dir = sessions_dir.join(&encoded);
-                if let Err(e) = std::fs::create_dir_all(&ws_dir) {
-                    tracing::error!("创建工作区目录失败: {} — {}", ws_dir.display(), e);
-                    self.tui.bottom_bar.status = format!("创建失败: {}", e);
+            Action::CreateWorkspace(ref path) => {
+                // 验证路径是否存在
+                let p = std::path::Path::new(path);
+                if !p.exists() || !p.is_dir() {
+                    self.tui.bottom_bar.status = format!("路径不存在或不是目录: {}", path);
                 } else {
-                    self.populate_workspaces();
-                    self.sync_components();
-                    self.tui.bottom_bar.status = format!("已创建工作区: {}", name);
+                    let encoded = encode_workspace_name(path);
+                    let sessions_dir = pi_sessions_dir();
+                    let ws_dir = sessions_dir.join(&encoded);
+                    if let Err(e) = std::fs::create_dir_all(&ws_dir) {
+                        tracing::error!("创建工作区目录失败: {} — {}", ws_dir.display(), e);
+                        self.tui.bottom_bar.status = format!("创建失败: {}", e);
+                    } else {
+                        self.populate_workspaces();
+                        self.sync_components();
+                        self.tui.bottom_bar.status = format!("已添加工作区: {}", path);
+                    }
                 }
             }
 
@@ -1611,46 +1620,23 @@ impl App {
                 ref name,
             } => {
                 if let Some(ws) = self.tui.workspaces.get(workspace_index) {
-                    // 找到工作区对应的磁盘目录
                     let sessions_dir = pi_sessions_dir();
-                    let ws_raw = encode_workspace_name(&ws.name);
-                    // 编码后可能和已存在的目录略有不同，需要匹配实际目录名
-                    let actual_dir = std::fs::read_dir(&sessions_dir)
-                        .ok()
-                        .and_then(|entries| {
-                            entries.flatten().find_map(|e| {
-                                let p = e.path();
-                                if p.is_dir()
-                                    && p.file_name()
-                                        .map(|n| n.to_string_lossy().to_string())
-                                        .unwrap_or_default()
-                                        == ws_raw
-                                {
-                                    Some(p)
-                                } else {
-                                    None
-                                }
-                            })
+                    let ws_encoded = encode_workspace_name(&ws.cwd);
+                    let actual_dir = std::fs::read_dir(&sessions_dir).ok().and_then(|entries| {
+                        entries.flatten().find_map(|e| {
+                            let p = e.path();
+                            if p.is_dir()
+                                && p.file_name()
+                                    .map(|n| n.to_string_lossy().to_string())
+                                    .unwrap_or_default()
+                                    == ws_encoded
+                            {
+                                Some(p)
+                            } else {
+                                None
+                            }
                         })
-                        .or_else(|| {
-                            // 如果没匹配到，尝试用更宽松的匹配
-                            std::fs::read_dir(&sessions_dir).ok().and_then(|entries| {
-                                entries.flatten().find_map(|e| {
-                                    let p = e.path();
-                                    if p.is_dir()
-                                        && decode_workspace_name(
-                                            &p.file_name()
-                                                .map(|n| n.to_string_lossy().to_string())
-                                                .unwrap_or_default(),
-                                        ) == ws.name
-                                    {
-                                        Some(p)
-                                    } else {
-                                        None
-                                    }
-                                })
-                            })
-                        });
+                    });
 
                     if let Some(ws_dir) = actual_dir {
                         let session_id = uuid_v4_simple();
@@ -1673,18 +1659,20 @@ impl App {
             Action::DeleteWorkspace(index) => {
                 if let Some(ws) = self.tui.workspaces.get(index) {
                     let sessions_dir = pi_sessions_dir();
-                    let ws_name = ws.name.clone();
-                    // 查找实际目录
+                    let ws_cwd = ws.cwd.clone();
+                    let ws_display = ws.display_name.clone();
+                    // 通过 cwd 编码匹配目录
                     if let Some(ws_dir) =
                         std::fs::read_dir(&sessions_dir).ok().and_then(|entries| {
                             entries.flatten().find_map(|e| {
                                 let p = e.path();
                                 if p.is_dir()
-                                    && decode_workspace_name(
+                                    && dir_matches_cwd(
                                         &p.file_name()
                                             .map(|n| n.to_string_lossy().to_string())
                                             .unwrap_or_default(),
-                                    ) == ws_name
+                                        &ws_cwd,
+                                    )
                                 {
                                     Some(p)
                                 } else {
@@ -1699,7 +1687,7 @@ impl App {
                         } else {
                             self.populate_workspaces();
                             self.sync_components();
-                            self.tui.bottom_bar.status = format!("已删除工作区: {}", ws_name);
+                            self.tui.bottom_bar.status = format!("已删除工作区: {}", ws_display);
                         }
                     }
                 }
@@ -1731,18 +1719,20 @@ impl App {
                 ref new_name,
             } => {
                 if let Some(ws) = self.tui.workspaces.get(index) {
-                    let old_name = ws.name.clone();
+                    let old_cwd = ws.cwd.clone();
+                    let old_display = ws.display_name.clone();
                     let sessions_dir = pi_sessions_dir();
                     if let Some(ws_dir) =
                         std::fs::read_dir(&sessions_dir).ok().and_then(|entries| {
                             entries.flatten().find_map(|e| {
                                 let p = e.path();
                                 if p.is_dir()
-                                    && decode_workspace_name(
+                                    && dir_matches_cwd(
                                         &p.file_name()
                                             .map(|n| n.to_string_lossy().to_string())
                                             .unwrap_or_default(),
-                                    ) == old_name
+                                        &old_cwd,
+                                    )
                                 {
                                     Some(p)
                                 } else {
@@ -1765,7 +1755,7 @@ impl App {
                             self.populate_workspaces();
                             self.sync_components();
                             self.tui.bottom_bar.status =
-                                format!("「{}」→「{}」", old_name, new_name);
+                                format!("「{}」→「{}」", old_display, new_name);
                         }
                     }
                 }
@@ -2602,7 +2592,9 @@ impl App {
 
             let ta = f.area();
             let (title, hint) = match state {
-                RenameState::CreateWorkspace => ("新建工作区", "输入名称后 Enter 确认，Esc 取消"),
+                RenameState::CreateWorkspace => {
+                    ("添加工作区", "输入项目目录路径后 Enter 确认，Esc 取消")
+                }
                 RenameState::CreateSession { .. } => {
                     ("新建会话", "输入名称后 Enter 确认，Esc 取消")
                 }
@@ -2746,7 +2738,7 @@ impl App {
                 .workspaces
                 .iter()
                 .filter(|ws| ws.expanded)
-                .map(|ws| ws.name.clone())
+                .map(|ws| ws.cwd.clone())
                 .collect(),
         }
     }
@@ -2759,7 +2751,7 @@ impl App {
 
         // 恢复工作区展开状态
         for ws in &mut self.tui.workspaces {
-            ws.expanded = state.expanded_workspaces.contains(&ws.name);
+            ws.expanded = state.expanded_workspaces.contains(&ws.cwd);
         }
 
         // 恢复活跃会话
@@ -2816,9 +2808,13 @@ impl App {
     }
 
     /// 从 session 目录扫描并填充工作区数据
+    ///
+    /// 从每个目录下的第一个 JSONL 文件提取 `cwd` 字段作为工作区标识，
+    /// 无 JSONL 或无法提取 cwd 的目录不显示。同名末端目录自动加父级区分。
     pub fn populate_workspaces(&mut self) {
         let sessions_dir = pi_sessions_dir();
-        let mut workspaces = Vec::new();
+        let mut ws_map: std::collections::HashMap<String, WorkspaceNode> =
+            std::collections::HashMap::new();
 
         if let Ok(entries) = std::fs::read_dir(&sessions_dir) {
             for entry in entries.flatten() {
@@ -2826,60 +2822,78 @@ impl App {
                 if !path.is_dir() {
                     continue;
                 }
-                let raw_name = path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                if raw_name.is_empty() {
-                    continue;
-                }
-                // 解码为可读的项目目录名
-                let ws_name = decode_workspace_name(&raw_name);
-
-                let mut sessions = Vec::new();
+                // 扫描目录中的 JSONL 文件
+                let mut jsonl_files: Vec<std::path::PathBuf> = Vec::new();
                 if let Ok(file_entries) = std::fs::read_dir(&path) {
-                    for file_entry in file_entries.flatten() {
-                        let fpath = file_entry.path();
-                        if fpath.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-                            continue;
+                    for fe in file_entries.flatten() {
+                        let fp = fe.path();
+                        if fp.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+                            jsonl_files.push(fp);
                         }
-                        let id = fpath
-                            .file_stem()
-                            .map(|n| n.to_string_lossy().to_string())
-                            .unwrap_or_default();
-                        // 从 jsonl 文件解析会话名称（第一条用户消息）
-                        let name = extract_session_name(&fpath)
-                            .unwrap_or_else(|| "New Session".to_string());
-                        // 粗略估计消息数：每行算一条消息
-                        let message_count = if let Ok(content) = std::fs::read_to_string(&fpath) {
-                            content.lines().count()
-                        } else {
-                            0
-                        };
-                        sessions.push(SessionNode {
-                            id,
-                            name,
-                            file_path: Some(fpath.to_string_lossy().to_string()),
-                            message_count,
-                            is_online: false,
-                        });
                     }
                 }
+                // 无 JSONL 的目录不显示
+                if jsonl_files.is_empty() {
+                    continue;
+                }
 
-                // 按消息数降序排列
+                // 从第一个 JSONL 文件提取 cwd
+                let cwd = jsonl_files
+                    .first()
+                    .and_then(|fp| extract_workspace_cwd(fp))
+                    .unwrap_or_default();
+                if cwd.is_empty() {
+                    continue;
+                }
+
+                // 构建会话列表
+                let mut sessions = Vec::new();
+                for fp in &jsonl_files {
+                    let id = fp
+                        .file_stem()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    let name =
+                        extract_session_name(fp).unwrap_or_else(|| "New Session".to_string());
+                    let message_count = if let Ok(content) = std::fs::read_to_string(fp) {
+                        content.lines().count()
+                    } else {
+                        0
+                    };
+                    sessions.push(SessionNode {
+                        id,
+                        name,
+                        file_path: Some(fp.to_string_lossy().to_string()),
+                        message_count,
+                        is_online: false,
+                    });
+                }
                 sessions.sort_by(|a, b| b.message_count.cmp(&a.message_count));
 
-                let expanded = workspaces.is_empty(); // 第一个工作区默认展开
-                workspaces.push(WorkspaceNode {
-                    name: ws_name,
-                    sessions,
-                    expanded,
-                });
+                // 按 cwd 去重合并：同一 cwd 的多个目录合并会话
+                if let Some(existing) = ws_map.get_mut(&cwd) {
+                    existing.sessions.extend(sessions);
+                    existing
+                        .sessions
+                        .sort_by(|a, b| b.message_count.cmp(&a.message_count));
+                } else {
+                    ws_map.insert(
+                        cwd.clone(),
+                        WorkspaceNode {
+                            cwd: cwd.clone(),
+                            display_name: String::new(), // 稍后计算
+                            sessions,
+                            expanded: ws_map.is_empty(), // 第一个默认展开
+                        },
+                    );
+                }
             }
         }
 
-        // 按工作区名称排序
-        workspaces.sort_by(|a, b| a.name.cmp(&b.name));
+        // 转换为 Vec 并计算 display_name
+        let mut workspaces: Vec<WorkspaceNode> = ws_map.into_values().collect();
+        compute_display_names(&mut workspaces);
+        workspaces.sort_by(|a, b| a.display_name.cmp(&b.display_name));
 
         self.tui.workspaces = workspaces;
     }
@@ -3132,71 +3146,55 @@ fn dirs_for(subdir: &str, user: bool) -> std::path::PathBuf {
 /// `--media-hr-Data-Codes-agent-tui--` → `agent-tui`
 /// `--home-hr-.pi-agent--` → `.pi-agent`
 /// `--tmp--` → `tmp`
-fn decode_workspace_name(encoded: &str) -> String {
-    let inner = encoded.trim_start_matches('-').trim_end_matches('-');
-    if inner.is_empty() {
-        return encoded.to_string();
-    }
+/// 从 JSONL 文件第一行提取 `cwd` 字段
+fn extract_workspace_cwd(path: &std::path::Path) -> Option<String> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let first_line = content.lines().next()?;
+    let val: serde_json::Value = serde_json::from_str(first_line).ok()?;
+    val.get("cwd")?.as_str().map(String::from)
+}
 
-    let parts: Vec<&str> = inner.split('-').filter(|s| !s.is_empty()).collect();
-    if parts.len() <= 2 {
-        // 短路径直接返回最后一段
-        return parts.last().unwrap_or(&inner).to_string();
-    }
+/// 为一组工作区计算去重后的 display_name
+fn compute_display_names(workspaces: &mut [WorkspaceNode]) {
+    let mut names: Vec<String> = workspaces
+        .iter()
+        .map(|ws| {
+            std::path::Path::new(&ws.cwd)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| ws.cwd.clone())
+        })
+        .collect();
 
-    // 应从名称尾部剔除的通用路径前缀
-    let strip_patterns = [
-        "home",
-        "media",
-        "mnt",
-        "tmp",
-        "usr",
-        "var",
-        "opt",
-        "etc",
-        "srv",
-        "root",
-        "run",
-        "boot",
-        "hr",
-        "Data",
-        "Codes",
-        "Projects",
-        "workspace",
-        "git",
-        "src",
-        "dev",
-        "app",
-        ".config",
-        ".pi",
-        ".local",
-        "node_modules",
-        "Users",
-        "Documents",
-        "Downloads",
-        "Desktop",
-    ];
-
-    // 从尾部向前遍历，遇到通用路径前缀就停下
-    let mut name_parts: Vec<&str> = Vec::new();
-    for part in parts.iter().rev() {
-        if name_parts.is_empty() || !strip_patterns.contains(part) {
-            name_parts.push(part);
-        } else if name_parts.len() <= 1 {
-            // 如果只有一个有效段，允许保留一个 strip pattern
-            name_parts.push(part);
-        } else {
+    loop {
+        let mut dup_set = std::collections::HashSet::new();
+        let mut has_dup = false;
+        for n in &names {
+            if !dup_set.insert(n.clone()) {
+                has_dup = true;
+                break;
+            }
+        }
+        if !has_dup {
             break;
+        }
+        let mut count_map: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        for n in &names {
+            *count_map.entry(n.clone()).or_insert(0) += 1;
+        }
+        for (i, ws) in workspaces.iter().enumerate() {
+            if *count_map.get(&names[i]).unwrap_or(&0) > 1 {
+                let path = std::path::Path::new(&ws.cwd);
+                if let Some(parent) = path.parent().and_then(|p| p.file_name()) {
+                    names[i] = format!("{}/{}", parent.to_string_lossy(), names[i]);
+                }
+            }
         }
     }
 
-    name_parts.reverse();
-    let name = name_parts.join("-");
-
-    if name.is_empty() {
-        parts.last().unwrap_or(&inner).to_string()
-    } else {
-        name
+    for (i, ws) in workspaces.iter_mut().enumerate() {
+        ws.display_name = names[i].clone();
     }
 }
 
@@ -3479,22 +3477,19 @@ fn compute_diff_lines(old_text: &str, new_text: &str) -> Vec<crate::message::Dif
 }
 
 /// 将用户友好的工作区名称编码为 pi 目录格式
+/// 将文件系统路径编码为 pi sessions 目录名
 ///
-/// pi 编码实际路径为 `--home-hr-Projects-agent-tui--`，
-/// 手动创建的工作区使用 `--ws-{name}--` 格式以区分
-fn encode_workspace_name(name: &str) -> String {
-    // 用 --ws-{sanitized}-- 格式
-    let sanitized: String = name
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '-'
-            }
-        })
-        .collect();
-    format!("--ws-{}--", sanitized.trim_matches('-'))
+/// pi 编码规则：`/` → `-`，前后加 `--`。
+/// 例如 `/home/hr/Projects/agent-tui` → `--home-hr-Projects-agent-tui--`
+fn encode_workspace_name(path: &str) -> String {
+    format!("--{}--", path.replace('/', "-"))
+}
+
+/// 将 cwd 与 sessions 目录名匹配
+///
+/// 检查 `dir_name` 是否对应给定的 `cwd` 路径。
+fn dir_matches_cwd(dir_name: &str, cwd: &str) -> bool {
+    encode_workspace_name(cwd) == dir_name
 }
 
 /// 生成简单的 UUID（8 位 hex）
@@ -3593,11 +3588,11 @@ mod tests {
             "row 0 should start with space before ACTIVE SESSION header"
         );
 
-        // 第 1 行是活跃会话行（● demo-session）
+        // 第 1 行是活跃会话行（● demo-session），左侧有 1 列内边距
         assert_eq!(
-            buffer[(0, 1)].symbol(),
+            buffer[(1, 1)].symbol(),
             "●",
-            "row 1 should start with active session dot"
+            "row 1 should start with active session dot (after left padding)"
         );
 
         // 验证三栏分隔符位置
@@ -3609,7 +3604,7 @@ mod tests {
         assert_eq!(
             buffer[(81, 0)].symbol(),
             " ",
-            "agent panel should start with space before AGENTS (row 0)"
+            "agent panel should have left padding space (col 81)"
         );
 
         // 验证底栏存在（TestBackend 创建为 120x32）

@@ -70,6 +70,13 @@ impl Component for AgentPanel {
             .border_style(border_color);
 
         let inner = block.inner(area);
+        // 左右各留 1 列内边距
+        let padded = Rect::new(
+            inner.x + 1,
+            inner.y,
+            inner.width.saturating_sub(2),
+            inner.height,
+        );
         f.render_widget(block, area);
 
         let agent = if self.active_agent.is_empty() {
@@ -241,13 +248,13 @@ impl Component for AgentPanel {
         lines.push(tasks_title);
         lines.push(Line::from("○ 暂无任务".to_string().fg(theme.text_dim)));
 
-        selection::apply_selection(&mut lines, inner, &mut self.selection, theme);
+        selection::apply_selection(&mut lines, padded, &mut self.selection, theme);
 
         f.render_widget(
             Paragraph::new(lines)
                 .fg(theme.text_dim)
                 .style(Style::default().bg(theme.bg)),
-            inner,
+            padded,
         );
     }
 }

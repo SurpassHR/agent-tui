@@ -999,9 +999,9 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                                         app.tui.sidebar_item_at(cursor)
                                     {
                                         if is_ws {
-                                            // 创建工作区
+                                            // 添加工作区（输入项目路径）
                                             app.tui.bottom_bar.status =
-                                                "新建工作区: 输入名称后按 Enter".into();
+                                                "添加工作区: 输入项目路径后按 Enter".into();
                                             // 使用输入框收集名称（临时方案：弹出 modal）
                                             app.tui.workspace_rename = Some(
                                                 crate::app::RenameState::CreateWorkspace,
@@ -1029,7 +1029,7 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                                                         target:
                                                             crate::app::ConfirmDeleteTarget::Workspace {
                                                                 index: ws_idx,
-                                                                name: ws.name.clone(),
+                                                                name: ws.display_name.clone(),
                                                             },
                                                     });
                                             }

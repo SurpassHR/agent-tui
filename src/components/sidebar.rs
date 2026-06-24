@@ -148,7 +148,7 @@ impl Sidebar {
             let mut ws_line = Line::from(vec![
                 Span::from(chevron).fg(theme.border_dim),
                 Span::from("📁 ").fg(theme.text_dim),
-                Span::from(ws.name.clone()).fg(theme.text),
+                Span::from(ws.display_name.clone()).fg(theme.text),
                 Span::from(format!(" ({})", count_str)).fg(theme.border_dim),
             ]);
             if is_header {
@@ -445,6 +445,13 @@ impl Component for Sidebar {
             .border_style(border_color);
 
         let inner = block.inner(area);
+        // 左右各留 1 列内边距
+        let padded = Rect::new(
+            inner.x + 1,
+            inner.y,
+            inner.width.saturating_sub(2),
+            inner.height,
+        );
         f.render_widget(block, area);
 
         // ── 计算各区域高度 ──
@@ -452,14 +459,14 @@ impl Component for Sidebar {
                           // 统一用 14 行上限，footer 内容实际撑多高就是多高，不因子区切换跳动
         const MAX_FOOTER: u16 = 14;
         let max_footer = MAX_FOOTER;
-        let provisional = self.render_footer(inner.width, max_footer, theme);
+        let provisional = self.render_footer(padded.width, max_footer, theme);
         let footer_content_h = (provisional.len() as u16).clamp(FOOTER_LINES, max_footer);
-        let footer_h = if inner.height < top_h + FOOTER_LINES {
-            inner.height.saturating_sub(top_h).min(FOOTER_LINES)
+        let footer_h = if padded.height < top_h + FOOTER_LINES {
+            padded.height.saturating_sub(top_h).min(FOOTER_LINES)
         } else {
-            footer_content_h.min(inner.height.saturating_sub(top_h + 1))
+            footer_content_h.min(padded.height.saturating_sub(top_h + 1))
         };
-        let mid_h = inner.height.saturating_sub(top_h + footer_h).max(1);
+        let mid_h = padded.height.saturating_sub(top_h + footer_h).max(1);
 
         let sections = Layout::default()
             .direction(Direction::Vertical)
@@ -468,7 +475,7 @@ impl Component for Sidebar {
                 ratatui::layout::Constraint::Length(mid_h),
                 ratatui::layout::Constraint::Length(footer_h),
             ])
-            .split(inner);
+            .split(padded);
 
         // ── 顶部：活跃会话 ──
         let top_title = if self.has_focus && self.subsection == SidebarSubsection::ActiveSession {
