@@ -19,6 +19,18 @@ pub struct Theme {
     pub diff_red_bg: Color,
     /// Diff 新增行背景色
     pub diff_green_bg: Color,
+    /// Markdown 标题颜色
+    pub heading_color: Color,
+    /// Markdown 引用块文字颜色
+    pub blockquote_text: Color,
+    /// Markdown 内联代码背景色
+    pub inline_code_bg: Color,
+    /// Markdown 代码块边框颜色
+    pub code_border: Color,
+    /// Markdown 代码块背景色
+    pub code_bg: Color,
+    /// Markdown 链接颜色
+    pub link_color: Color,
 }
 
 impl Theme {
@@ -37,6 +49,12 @@ impl Theme {
             selection_fg: Color::Rgb(255, 255, 255),
             diff_red_bg: Color::Rgb(42, 26, 26),
             diff_green_bg: Color::Rgb(26, 42, 26),
+            heading_color: Color::Rgb(255, 191, 92),
+            blockquote_text: Color::Rgb(132, 155, 156),
+            inline_code_bg: Color::Rgb(30, 40, 45),
+            code_border: Color::Rgb(76, 133, 135),
+            code_bg: Color::Rgb(10, 22, 28),
+            link_color: Color::Rgb(151, 255, 245),
         }
     }
 }
@@ -67,5 +85,11 @@ mod tests {
         assert_eq!(theme.selection_fg, Color::Rgb(255, 255, 255));
         assert_eq!(theme.diff_red_bg, Color::Rgb(42, 26, 26));
         assert_eq!(theme.diff_green_bg, Color::Rgb(26, 42, 26));
+        assert_eq!(theme.heading_color, Color::Rgb(255, 191, 92));
+        assert_eq!(theme.blockquote_text, Color::Rgb(132, 155, 156));
+        assert_eq!(theme.inline_code_bg, Color::Rgb(30, 40, 45));
+        assert_eq!(theme.code_border, Color::Rgb(76, 133, 135));
+        assert_eq!(theme.code_bg, Color::Rgb(10, 22, 28));
+        assert_eq!(theme.link_color, Color::Rgb(151, 255, 245));
     }
 }

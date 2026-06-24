@@ -12,6 +12,7 @@ pub trait Component {
 pub mod agent_panel;
 pub mod bottom_bar;
 pub mod main_view;
+pub mod markdown;
 pub mod popup;
 pub mod sidebar;
 pub mod top_bar;
