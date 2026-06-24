@@ -784,4 +784,142 @@ mod tests {
             .any(|c| c.symbol() == "▶" || c.symbol() == "分" || c.symbol() == "这");
         assert!(has_text, "Expected some rendered content from blocks");
     }
+
+    #[test]
+    fn test_render_markdown_bold_in_text_block() {
+        let mut mv = MainView::default();
+        let mut msg = ChatMessage::assistant("test", "");
+        msg.content = vec![crate::message::ContentBlock::Text {
+            text: "这是 **粗体** 文字".to_string(),
+        }];
+        mv.messages.push(msg);
+
+        let theme = Theme::cyan();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                mv.render(f, area, &theme);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        // 确认 "粗体" 文字出现在输出中
+        let has_bold_text = buffer
+            .content()
+            .iter()
+            .any(|c| c.symbol() == "粗");
+        assert!(has_bold_text, "Bold text should be rendered in output");
+    }
+
+    #[test]
+    fn test_render_markdown_code_block() {
+        let mut mv = MainView::default();
+        let mut msg = ChatMessage::assistant("test", "");
+        msg.content = vec![crate::message::ContentBlock::Text {
+            text: "```\nlet x = 1;\n```".to_string(),
+        }];
+        mv.messages.push(msg);
+
+        let theme = Theme::cyan();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                mv.render(f, area, &theme);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        // 确认代码内容出现（检查单个字符，各字符分布在独立 buffer cell 中）
+        let has_code = buffer
+            .content()
+            .iter()
+            .any(|c| c.symbol() == "l" || c.symbol() == "x" || c.symbol() == "1");
+        assert!(has_code, "Code block content should be rendered");
+    }
+
+    #[test]
+    fn test_render_markdown_heading() {
+        let mut mv = MainView::default();
+        let mut msg = ChatMessage::assistant("test", "");
+        msg.content = vec![crate::message::ContentBlock::Text {
+            text: "## 安装步骤".to_string(),
+        }];
+        mv.messages.push(msg);
+
+        let theme = Theme::cyan();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                mv.render(f, area, &theme);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let has_heading = buffer
+            .content()
+            .iter()
+            .any(|c| c.symbol() == "安" || c.symbol() == "步" || c.symbol() == "骤");
+        assert!(has_heading, "Heading text should be rendered");
+    }
+
+    #[test]
+    fn test_render_markdown_list() {
+        let mut mv = MainView::default();
+        let mut msg = ChatMessage::assistant("test", "");
+        msg.content = vec![crate::message::ContentBlock::Text {
+            text: "- 第一项\n- 第二项".to_string(),
+        }];
+        mv.messages.push(msg);
+
+        let theme = Theme::cyan();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                mv.render(f, area, &theme);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let has_item = buffer
+            .content()
+            .iter()
+            .any(|c| c.symbol() == "第" || c.symbol() == "一");
+        assert!(has_item, "List items should be rendered");
+    }
+
+    #[test]
+    fn test_render_plain_text_still_works() {
+        // 回归测试：确保无 Markdown 的纯文本仍然正常渲染
+        let mut mv = MainView::default();
+        let mut msg = ChatMessage::assistant("test", "");
+        msg.content = vec![crate::message::ContentBlock::Text {
+            text: "普通文本 没有特殊格式".to_string(),
+        }];
+        mv.messages.push(msg);
+
+        let theme = Theme::cyan();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                mv.render(f, area, &theme);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let has_text = buffer
+            .content()
+            .iter()
+            .any(|c| c.symbol() == "普" || c.symbol() == "通");
+        assert!(has_text, "Plain text should be rendered");
+    }
 }
