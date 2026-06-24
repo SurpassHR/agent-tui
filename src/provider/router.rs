@@ -241,6 +241,19 @@ async fn standard_chat_proxy(
         req_builder = req_builder.header("Authorization", format!("Bearer {}", target.api_key));
     }
 
+    // pi 固定使用 developer 角色，但多数 OpenAI 兼容 API（如 DeepSeek）不支持
+    // 转发前统一转换为 system
+    let bytes = rewrite_developer_to_system(bytes.to_vec());
+
+    // 临时诊断：打印发送给上游的请求体
+    let body_str = String::from_utf8_lossy(&bytes);
+    tracing::info!(
+        "POST {} | body={} | auth={}",
+        target_url,
+        &body_str[..body_str.len().min(500)],
+        if target.api_key.is_empty() { "none" } else { "Bearer ***" }
+    );
+
     req_builder = req_builder.body(bytes.to_vec());
 
     let upstream_start = std::time::Instant::now();
@@ -293,6 +306,24 @@ async fn standard_chat_proxy(
 fn extract_model_from_body(bytes: &[u8]) -> Option<String> {
     let val: serde_json::Value = serde_json::from_slice(bytes).ok()?;
     val.get("model")?.as_str().map(|s| s.to_string())
+}
+
+/// 将 messages 中的 developer 角色转换为 system（DeepSeek 等 API 不支持 developer）
+fn rewrite_developer_to_system(bytes: Vec<u8>) -> Vec<u8> {
+    let mut val: serde_json::Value = match serde_json::from_slice(&bytes) {
+        Ok(v) => v,
+        Err(_) => return bytes,
+    };
+    if let Some(messages) = val.get_mut("messages").and_then(|m| m.as_array_mut()) {
+        for msg in messages {
+            if msg.get("role").and_then(|r| r.as_str()) == Some("developer") {
+                if let Some(obj) = msg.as_object_mut() {
+                    obj.insert("role".to_string(), serde_json::json!("system"));
+                }
+            }
+        }
+    }
+    serde_json::to_vec(&val).unwrap_or(bytes)
 }
 
 /// 通用转发（bridge 模式用）

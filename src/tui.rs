@@ -19,12 +19,40 @@ use crate::message::ToolStatus;
 /// 对于 MessageUpdate，同时发出 delta 事件（打字机效果）和 ContentUpdate（块数组快照）。
 fn translate_pi_events(event: PiEvent, agent_id: &str) -> Vec<Action> {
     let mut actions = Vec::new();
+    // 临时诊断：记录所有事件类型
+    let event_type = match &event {
+        PiEvent::MessageUpdate { .. } => "MessageUpdate",
+        PiEvent::MessageStart { .. } => "MessageStart",
+        PiEvent::MessageEnd { .. } => "MessageEnd",
+        PiEvent::ToolExecutionStart { .. } => "ToolExecutionStart",
+        PiEvent::ToolExecutionUpdate { .. } => "ToolExecutionUpdate",
+        PiEvent::ToolExecutionEnd { .. } => "ToolExecutionEnd",
+        PiEvent::AgentStart => "AgentStart",
+        PiEvent::AgentEnd { .. } => "AgentEnd",
+        PiEvent::ExtensionError { .. } => "ExtensionError",
+        PiEvent::AutoRetryStart { .. } => "AutoRetryStart",
+        PiEvent::AutoRetryEnd { .. } => "AutoRetryEnd",
+        PiEvent::ExtensionUiRequest { .. } => "ExtensionUiRequest",
+    };
+    tracing::info!("PI_EVENT type={} (has_message={})",
+        event_type,
+        matches!(&event, PiEvent::MessageUpdate { message: Some(_), .. } | PiEvent::MessageEnd { message: Some(_), .. })
+    );
     match &event {
         PiEvent::MessageUpdate {
             assistant_event,
             message,
             ..
         } => {
+            // 临时诊断日志：确认 pi 是否携带 message.content 快照
+            let has_msg = message.is_some();
+            let block_count = message.as_ref().map(|m| m.content.len()).unwrap_or(0);
+            tracing::info!(
+                "MSG_UPDATE type={:?} has_message={} blocks={}",
+                assistant_event.event_type,
+                has_msg,
+                block_count
+            );
             // 1. delta 事件（打字机效果）
             match assistant_event.event_type {
                 AssistantEventType::TextDelta => {
