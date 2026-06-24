@@ -138,6 +138,24 @@ impl PiRpcClient {
 
     /// 发送通知（不需要等待响应）
     pub async fn notify(&mut self, cmd: Value) -> Result<()> {
+        let msg_type = cmd.get("type").and_then(|v| v.as_str()).unwrap_or("?");
+        let msg_preview = if msg_type == "prompt" {
+            cmd.get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string()
+        } else {
+            String::new()
+        };
+        tracing::info!(
+            "RPC notify → pi: type={} {}",
+            msg_type,
+            if msg_preview.is_empty() {
+                String::new()
+            } else {
+                format!("message=\"{}\"", msg_preview)
+            }
+        );
         let line = serde_json::to_string(&cmd)
             .map_err(|e| crate::errors::Error::Channel(format!("serialization error: {}", e)))?;
         self.writer

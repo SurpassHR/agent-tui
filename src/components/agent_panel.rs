@@ -1,11 +1,13 @@
-use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::Frame;
 
 use super::Component;
-use crate::app::{AgentPanelSubsection, AgentStatus, McpInfo, SelectionState, SkillInfo, SubAgentInfo};
+use crate::app::{
+    AgentPanelSubsection, AgentStatus, McpInfo, SelectionState, SkillInfo, SubAgentInfo,
+};
 use crate::selection;
 use crate::theme::Theme;
 
@@ -89,7 +91,9 @@ impl Component for AgentPanel {
         } else {
             Line::from(vec![
                 Span::from(" "),
-                Span::from(format!("AGENTS ({})", count)).fg(theme.heading).bold(),
+                Span::from(format!("AGENTS ({})", count))
+                    .fg(theme.heading)
+                    .bold(),
             ])
         };
         lines.push(agents_title);
@@ -139,7 +143,9 @@ impl Component for AgentPanel {
         } else {
             Line::from(vec![
                 Span::from(" "),
-                Span::from(format!("SKILLS ({})", skill_count)).fg(theme.heading).bold(),
+                Span::from(format!("SKILLS ({})", skill_count))
+                    .fg(theme.heading)
+                    .bold(),
             ])
         };
         lines.push(skills_title);
@@ -162,17 +168,12 @@ impl Component for AgentPanel {
                 };
                 let style = Style::default().fg(fg).bg(bg);
                 lines.push(
-                    Line::from(vec![
-                        Span::from("○ "),
-                        Span::from(sk.name.clone()),
-                    ])
-                    .style(style),
+                    Line::from(vec![Span::from("○ "), Span::from(sk.name.clone())]).style(style),
                 );
             }
             if skill_count > display_max {
                 lines.push(Line::from(
-                    format!("… 还有 {} 个", skill_count - display_max)
-                        .fg(theme.text_dim),
+                    format!("… 还有 {} 个", skill_count - display_max).fg(theme.text_dim),
                 ));
             }
         }
@@ -188,7 +189,9 @@ impl Component for AgentPanel {
         } else {
             Line::from(vec![
                 Span::from(" "),
-                Span::from(format!("MCPS ({})", mcp_count)).fg(theme.heading).bold(),
+                Span::from(format!("MCPS ({})", mcp_count))
+                    .fg(theme.heading)
+                    .bold(),
             ])
         };
         lines.push(mcps_title);

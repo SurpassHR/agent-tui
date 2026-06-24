@@ -177,10 +177,22 @@ pub enum AssistantEventType {
     ThinkingDelta,
     /// 思考结束
     ThinkingEnd,
+    /// 思考块开始
+    #[serde(rename = "thinking_start")]
+    ThinkingStart,
     /// 消息开始
     MessageStart,
     /// 消息结束
     MessageEnd,
+    /// 工具调用块开始
+    #[serde(rename = "toolcall_start")]
+    ToolCallStart,
+    /// 工具调用参数流式追加
+    #[serde(rename = "toolcall_delta")]
+    ToolCallDelta,
+    /// 工具调用块完成
+    #[serde(rename = "toolcall_end")]
+    ToolCallEnd,
     /// 处理完成
     Done,
     /// 出错
@@ -326,6 +338,52 @@ mod tests {
                 assert_eq!(
                     assistant_event.delta,
                     Some("I need to analyze...".to_string())
+                );
+            }
+            other => panic!("expected MessageUpdate, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_assistant_event_tool_call_start() {
+        let raw = json!({
+            "type": "message_update",
+            "assistantMessageEvent": {
+                "type": "toolcall_start",
+                "contentIndex": 2,
+                "toolName": "bash"
+            }
+        });
+        let event = parse_pi_event(&raw).unwrap();
+        match event {
+            Some(PiEvent::MessageUpdate {
+                assistant_event, ..
+            }) => {
+                assert_eq!(
+                    assistant_event.event_type,
+                    AssistantEventType::ToolCallStart
+                );
+            }
+            other => panic!("expected MessageUpdate, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_assistant_event_thinking_start() {
+        let raw = json!({
+            "type": "message_update",
+            "assistantMessageEvent": {
+                "type": "thinking_start"
+            }
+        });
+        let event = parse_pi_event(&raw).unwrap();
+        match event {
+            Some(PiEvent::MessageUpdate {
+                assistant_event, ..
+            }) => {
+                assert_eq!(
+                    assistant_event.event_type,
+                    AssistantEventType::ThinkingStart
                 );
             }
             other => panic!("expected MessageUpdate, got {:?}", other),

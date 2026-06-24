@@ -39,6 +39,61 @@ pub enum ToolStatus {
     Error,
 }
 
+/// 块的展开状态
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum BlockExpanded {
+    /// 折叠（默认）— 只显示摘要行
+    Collapsed,
+    /// 展开 — 显示完整内容
+    Expanded,
+}
+
+/// 块类型（用于可交互块分类）
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BlockKind {
+    /// 思考块
+    Thinking,
+    /// 工具调用块
+    ToolCall,
+}
+
+/// Diff 行
+#[derive(Debug, Clone)]
+pub struct DiffLine {
+    /// 行类型：- 删除, + 新增, = 不变
+    pub kind: char,
+    /// 行号（原始文件）
+    pub old_line: Option<usize>,
+    /// 行号（新文件）
+    pub new_line: Option<usize>,
+    /// 行文本
+    pub text: String,
+}
+
+/// 补全候选项
+#[derive(Debug, Clone)]
+pub struct CompletionItem {
+    /// 显示文本
+    pub label: String,
+    /// 填入的文本
+    pub value: String,
+    /// 类型图标前缀（如 "📁" / "⚡"）
+    pub prefix: String,
+}
+
+/// 输入补全 popup 状态
+#[derive(Debug, Clone)]
+pub struct CompletionPopup {
+    /// 候选项列表
+    pub items: Vec<CompletionItem>,
+    /// 当前选中索引
+    pub cursor: usize,
+    /// 触发前缀: "/" 或 "@"
+    pub trigger: char,
+    /// 用户已输入的过滤文本（不含前缀）
+    pub filter: String,
+}
+
 /// 工具调用信息
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCallInfo {
@@ -64,6 +119,9 @@ pub struct ToolCallInfo {
 pub struct ChatMessage {
     /// 消息唯一标识
     pub id: String,
+    /// 内容块数组（保持 pi AssistantMessage.content 的原始顺序）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub content: Vec<ContentBlock>,
     /// 所属 agent 的 ID
     pub agent_id: String,
     /// 角色
@@ -85,6 +143,7 @@ impl ChatMessage {
     pub fn user(agent_id: &str, text: &str) -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
+            content: vec![],
             agent_id: agent_id.to_string(),
             role: ChatRole::User,
             text: text.to_string(),
@@ -99,6 +158,7 @@ impl ChatMessage {
     pub fn assistant(agent_id: &str, text: &str) -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
+            content: vec![],
             agent_id: agent_id.to_string(),
             role: ChatRole::Assistant,
             text: text.to_string(),
@@ -124,6 +184,7 @@ impl ChatMessage {
         );
         Self {
             id: uuid::Uuid::new_v4().to_string(),
+            content: vec![],
             agent_id: agent_id.to_string(),
             role: ChatRole::Tool,
             text,
@@ -138,6 +199,7 @@ impl ChatMessage {
     pub fn system(agent_id: &str, text: &str) -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
+            content: vec![],
             agent_id: agent_id.to_string(),
             role: ChatRole::System,
             text: text.to_string(),
@@ -152,6 +214,7 @@ impl ChatMessage {
     pub fn error(agent_id: &str, text: &str) -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
+            content: vec![],
             agent_id: agent_id.to_string(),
             role: ChatRole::Error,
             text: text.to_string(),
@@ -161,6 +224,34 @@ impl ChatMessage {
             meta: None,
         }
     }
+}
+
+/// 进入详情视图类型
+#[derive(Debug, Clone)]
+pub enum EnteredView {
+    /// Diff 视图
+    Diff {
+        /// 文件路径
+        path: String,
+        /// diff 行
+        diff_lines: Vec<DiffLine>,
+    },
+    /// 完整输出视图
+    FullOutput {
+        /// 标题
+        title: String,
+        /// 完整内容
+        content: String,
+        /// 滚动偏移（行数）
+        scroll: usize,
+    },
+    /// Subagent 对话视图
+    Subagent {
+        /// 子代理 ID
+        agent_id: String,
+        /// 子代理消息列表
+        messages: Vec<ChatMessage>,
+    },
 }
 
 /// pi 消息中的内容块（对应 assistant 消息的复杂内容结构）
@@ -188,6 +279,12 @@ pub enum ContentBlock {
         name: String,
         /// 调用参数
         arguments: Value,
+        /// 执行结果（ToolExecutionEnd 后回填）
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        result: Option<Value>,
+        /// 是否出错
+        #[serde(default)]
+        is_error: bool,
     },
     /// 图片块（预留，终端 TUI 暂不支持展示）
     #[allow(unused)]
@@ -219,6 +316,47 @@ fn now_millis() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// 块引用（跨消息的可交互块扁平全局索引）
+#[derive(Debug, Clone)]
+pub struct BlockRef {
+    /// 原消息在 Vec 中的索引
+    pub msg_index: usize,
+    /// 消息 UUID
+    pub msg_id: String,
+    /// 消息内 content 数组的索引
+    pub block_index: usize,
+    /// 块类型
+    pub kind: BlockKind,
+}
+
+/// 从消息列表中构建所有可交互块的扁平引用列表
+///
+/// 遍历所有 Assistant 消息的 content 数组，收集 Thinking 和 ToolCall 块。
+/// Text 和 Image 块不可交互，被跳过。
+pub fn build_block_refs(messages: &[ChatMessage]) -> Vec<BlockRef> {
+    let mut refs = Vec::new();
+    for (msg_idx, msg) in messages.iter().enumerate() {
+        if msg.role == ChatRole::Assistant {
+            for (block_idx, block) in msg.content.iter().enumerate() {
+                let kind = match block {
+                    ContentBlock::Thinking { .. } => Some(BlockKind::Thinking),
+                    ContentBlock::ToolCall { .. } => Some(BlockKind::ToolCall),
+                    _ => None,
+                };
+                if let Some(kind) = kind {
+                    refs.push(BlockRef {
+                        msg_index: msg_idx,
+                        msg_id: msg.id.clone(),
+                        block_index: block_idx,
+                        kind,
+                    });
+                }
+            }
+        }
+    }
+    refs
 }
 
 #[cfg(test)]
@@ -310,11 +448,29 @@ mod tests {
             id: "tc-1".to_string(),
             name: "bash".to_string(),
             arguments: serde_json::json!({"command": "ls"}),
+            result: None,
+            is_error: false,
         };
         let json = serde_json::to_value(&block).unwrap();
         assert_eq!(json["type"], "toolCall");
         assert_eq!(json["name"], "bash");
         assert_eq!(json["arguments"]["command"], "ls");
+        assert!(json.get("result").is_none());
+        assert_eq!(json["is_error"], false);
+    }
+
+    #[test]
+    fn test_content_block_tool_call_with_result() {
+        let block = ContentBlock::ToolCall {
+            id: "tc-2".to_string(),
+            name: "read".to_string(),
+            arguments: serde_json::json!({"path": "src/main.rs"}),
+            result: Some(serde_json::json!({"content": "fn main() {}"})),
+            is_error: false,
+        };
+        let json = serde_json::to_value(&block).unwrap();
+        assert_eq!(json["result"]["content"], "fn main() {}");
+        assert_eq!(json["is_error"], false);
     }
 
     #[test]

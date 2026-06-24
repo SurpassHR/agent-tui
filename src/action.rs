@@ -63,6 +63,27 @@ pub enum Action {
     /// 自动重试状态消息
     AutoRetryStatus { agent_id: String, text: String },
 
+    // --- 内容块更新（块折叠 Phase 5） ---
+    /// 内容块数组更新（来自 MessageUpdate.message.content 快照）
+    ContentUpdate {
+        agent_id: String,
+        content: Vec<crate::message::ContentBlock>,
+    },
+    /// 切换块的展开/折叠
+    ToggleBlock {
+        agent_id: String,
+        msg_id: String,
+        block_index: usize,
+    },
+    /// 进入块的详情视图
+    EnterBlock {
+        agent_id: String,
+        msg_id: String,
+        block_index: usize,
+    },
+    /// 退出详情视图
+    ExitBlock,
+
     // --- UI 交互控制 ---
     /// 切换浮窗显示状态
     TogglePopup,

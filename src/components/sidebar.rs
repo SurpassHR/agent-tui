@@ -1,8 +1,8 @@
-use ratatui::Frame;
 use ratatui::layout::{Alignment, Direction, Layout, Rect};
 use ratatui::style::{Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::Frame;
 
 use super::Component;
 use crate::app::{SelectionState, SidebarSubsection, WorkspaceNode};
@@ -31,9 +31,6 @@ pub struct Sidebar {
     pub session_id: String,
     /// 当前会话消息数量
     pub message_count: usize,
-    // 模型信息
-    pub model_name: Option<String>,
-    pub provider: Option<String>,
     // 工作区树数据（由 sync_components 每次渲染前写入）
     pub workspaces: Vec<WorkspaceNode>,
     // 焦点与导航
@@ -43,10 +40,24 @@ pub struct Sidebar {
     pub subsection: SidebarSubsection,
     /// 选区状态（由 tui.rs 在每帧渲染前写入）
     pub selection: SelectionState,
+    // Provider 路由数据
+    pub providers: Vec<crate::provider::ProviderInfo>,
+    pub router_running: bool,
+    pub current_model: String,
+    pub provider_cursor: usize,
+    pub model_cursor: usize,
+    /// MODEL 子区搜索文本
+    pub model_search: String,
+    /// MODEL 子区滚动偏移
+    pub model_scroll: usize,
+    /// Provider Router 实际绑定的端口
+    pub port: u16,
+    /// 当前选中的 Provider 索引（Space 切换控制）
+    pub active_provider_idx: Option<usize>,
 }
 
-/// 底部 footer 固定行数（仅 MODEL 区 + 分隔线）
-const FOOTER_LINES: u16 = 3;
+/// 底部 provider 区最小行数（动态扩展）
+const FOOTER_LINES: u16 = 8;
 
 impl Sidebar {
     /// 计算工作区的滚动偏移，使光标保持在可见区域内
@@ -142,7 +153,9 @@ impl Sidebar {
             ]);
             if is_header {
                 ws_line = ws_line.patch_style(
-                    ratatui::style::Style::default().bg(theme.highlight_bg).fg(theme.selection_fg),
+                    ratatui::style::Style::default()
+                        .bg(theme.highlight_bg)
+                        .fg(theme.selection_fg),
                 );
             }
             lines.push(ws_line);
@@ -181,11 +194,17 @@ impl Sidebar {
                     ]);
                     if is_sess {
                         sess_line = sess_line.patch_style(
-                            ratatui::style::Style::default().bg(theme.highlight_bg).fg(theme.selection_fg),
+                            ratatui::style::Style::default()
+                                .bg(theme.highlight_bg)
+                                .fg(theme.selection_fg),
                         );
                     } else {
                         let sess_style = ratatui::style::Style::default()
-                            .fg(if session.id == self.active_session { theme.accent } else { theme.text })
+                            .fg(if session.id == self.active_session {
+                                theme.accent
+                            } else {
+                                theme.text
+                            })
                             .bg(theme.bg);
                         sess_line = sess_line.style(sess_style);
                     }
@@ -197,34 +216,218 @@ impl Sidebar {
         (lines, ws_count, sess_count)
     }
 
-    /// 底部模型 + Token 信息（固定区域）
-    /// `width` 为区域宽度，用于绘制全宽分割线
-    fn render_footer(&self, width: u16, theme: &Theme) -> Vec<Line<'static>> {
-        let model_name = self.model_name.as_deref().unwrap_or("--");
-        let provider = self.provider.as_deref().unwrap_or("--");
-
-        // 全宽分割线
+    /// 底部 Provider + MODEL 区块 — PROVIDER 在上，MODEL 跟随切换
+    fn render_footer(&self, width: u16, footer_height: u16, theme: &Theme) -> Vec<Line<'static>> {
         let sep = "─".repeat(width.saturating_sub(1).max(1) as usize);
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        let focused_on_providers = self.has_focus && self.subsection == SidebarSubsection::Provider;
+        let focused_on_models = self.has_focus && self.subsection == SidebarSubsection::Model;
 
-        let model_title = if self.has_focus && self.subsection == SidebarSubsection::Model {
+        // ── 全宽分隔线 ──
+        lines.push(Line::from(vec![
+            Span::from(sep.clone()).fg(theme.border_dim)
+        ]));
+
+        // ── PROVIDER 区块 ──
+        let status = if self.router_running && !self.providers.is_empty() {
+            format!(" ◈ :{}", self.port)
+        } else if self.router_running {
+            " ◇ no providers".to_string()
+        } else {
+            " ◇ offline".to_string()
+        };
+        let is_on_providers = focused_on_providers;
+        let p_title = if is_on_providers {
             Line::from(vec![
                 "▎".to_string().fg(theme.accent),
-                "MODEL  ".to_string().fg(theme.accent).bold(),
-                model_name.to_string().fg(theme.accent),
-                format!("  @{}", provider).fg(theme.text_dim),
+                format!("PROVIDER ({})", self.providers.len())
+                    .fg(theme.accent)
+                    .bold(),
+                Span::from(status).fg(if self.router_running {
+                    theme.success
+                } else {
+                    theme.text_dim
+                }),
             ])
         } else {
-            Line::from(vec![
-                Span::from(" MODEL  ").fg(theme.heading).bold(),
-                Span::from(model_name.to_string()).fg(theme.accent),
-                Span::from(format!("  @{}", provider)).fg(theme.text_dim),
-            ])
+            let mut s = vec![
+                Span::from(" "),
+                Span::from(format!("PROVIDER ({})", self.providers.len()))
+                    .fg(theme.heading)
+                    .bold(),
+            ];
+            if self.router_running {
+                s.push(Span::from(status).fg(theme.success));
+            }
+            Line::from(s)
         };
+        lines.push(p_title);
 
-        vec![
-            Line::from(vec![Span::from(sep).fg(theme.border_dim)]),
-            model_title,
-        ]
+        if self.providers.is_empty() {
+            // Empty state: first item is "add provider" action
+            if is_on_providers {
+                lines.push(
+                    Line::from(Span::from("  ◆ [+] add provider").fg(theme.selection_fg))
+                        .style(ratatui::style::Style::default().bg(theme.highlight_bg)),
+                );
+            } else {
+                lines.push(Line::from(
+                    Span::from("  ○ [+] add provider").fg(theme.text_dim),
+                ));
+            }
+        } else {
+            for (i, p) in self.providers.iter().enumerate() {
+                let is_active = self.active_provider_idx == Some(i);
+                let is_provider_selected = is_on_providers && i == self.provider_cursor;
+                let (fg, bg) = if is_provider_selected {
+                    (theme.selection_fg, theme.highlight_bg)
+                } else if is_active && p.enabled {
+                    (theme.accent, theme.bg)
+                } else {
+                    (theme.text_dim, theme.bg)
+                };
+                let cnt = p.models.len();
+                let icon = if !p.enabled {
+                    "⊗"
+                } else if is_active {
+                    "◆"
+                } else {
+                    "○"
+                };
+                let mut text = format!("  {} {}  ({} models)", icon, p.name, cnt);
+                if p.bridge {
+                    text.push_str(" 🔗");
+                }
+                lines.push(
+                    Line::from(vec![Span::from(text)])
+                        .style(ratatui::style::Style::default().fg(fg).bg(bg)),
+                );
+            }
+
+            let is_add_selected = is_on_providers && self.provider_cursor == self.providers.len();
+            let (fg, bg, prefix) = if is_add_selected {
+                (theme.selection_fg, theme.highlight_bg, "◆")
+            } else {
+                (theme.text_dim, theme.bg, "○")
+            };
+            lines.push(
+                Line::from(Span::from(format!("  {} [+] add provider", prefix)))
+                    .style(ratatui::style::Style::default().fg(fg).bg(bg)),
+            );
+        }
+
+        // ── MODEL 区块（独立跟随 active provider，支持搜索过滤 + 滚动） ──
+        // 优先用 active_provider_idx 按索引定位，避免同名模型 ID 跨 Provider 误匹配
+        let active_provider = self
+            .active_provider_idx
+            .and_then(|idx| self.providers.get(idx))
+            .filter(|p| p.enabled)
+            .or_else(|| {
+                self.providers
+                    .iter()
+                    .filter(|p| p.enabled)
+                    .find(|p| p.models.iter().any(|m| m.id == self.current_model))
+            })
+            .or_else(|| self.providers.iter().find(|p| p.enabled));
+
+        if let Some(ap) = active_provider {
+            lines.push(Line::from(vec![
+                Span::from(sep.clone()).fg(theme.border_dim)
+            ]));
+
+            let is_on_models = focused_on_models;
+            let m_title = if is_on_models {
+                Line::from(vec![
+                    "▎".to_string().fg(theme.accent),
+                    format!("MODEL  {}", ap.id).fg(theme.accent).bold(),
+                    Span::from(format!("  {} models", ap.models.len())).fg(theme.text_dim),
+                ])
+            } else if focused_on_providers {
+                // Provider 子区聚焦时：不带 ▎ 指示条，用 heading 色表明可达
+                Line::from(vec![
+                    Span::from(" MODEL  ").fg(theme.heading),
+                    Span::from(ap.id.clone()).fg(theme.heading).bold(),
+                    Span::from(format!("  {} models", ap.models.len())).fg(theme.text_dim),
+                ])
+            } else {
+                Line::from(vec![
+                    Span::from(" MODEL  ").fg(theme.heading),
+                    Span::from(ap.id.clone()).fg(theme.accent).bold(),
+                    Span::from(format!("  {} models", ap.models.len())).fg(theme.text_dim),
+                ])
+            };
+            lines.push(m_title);
+
+            // 搜索栏（非空时显示）
+            if !self.model_search.is_empty() {
+                lines.push(Line::from(
+                    Span::from(format!("  🔍 {}", self.model_search)).fg(theme.accent),
+                ));
+            }
+
+            // 过滤：只显示已开启 + 搜索匹配的模型
+            let q = self.model_search.to_lowercase();
+            let filtered: Vec<&crate::provider::ModelInfo> = ap
+                .models
+                .iter()
+                .filter(|m| {
+                    m.enabled && (self.model_search.is_empty() || m.id.to_lowercase().contains(&q))
+                })
+                .collect();
+
+            // 已推入的行数 = 前面所有行（分隔线 + PROVIDER + MODEL 标题 + 可能的搜索栏）
+            let pushed = lines.len();
+            // 可用行数（保留一行给底栏之外的部分）
+            let available = (footer_height as usize).saturating_sub(pushed);
+
+            // 计算 scroll 偏移使 cursor 可见
+            let mut scroll = self.model_scroll;
+            let cursor = self.model_cursor.min(filtered.len().saturating_sub(1));
+            if filtered.len() > available {
+                if cursor < scroll {
+                    scroll = cursor;
+                } else if cursor >= scroll + available {
+                    scroll = cursor.saturating_add(1).saturating_sub(available);
+                }
+            } else {
+                scroll = 0;
+            }
+
+            // 取可见范围
+            let visible: Vec<&&crate::provider::ModelInfo> =
+                filtered.iter().skip(scroll).take(available).collect();
+
+            for (vi, m) in visible.iter().enumerate() {
+                let is_model_active = self.current_model == m.id;
+                let is_model_selected = is_on_models && (scroll + vi) == self.model_cursor;
+                let (mf, mb) = if is_model_selected {
+                    (theme.selection_fg, theme.highlight_bg)
+                } else if is_model_active {
+                    (theme.success, theme.bg)
+                } else {
+                    (theme.text_dim, theme.bg)
+                };
+                let marker = if is_model_active { " ←" } else { "" };
+                let ctx = if m.context_window >= 1_000_000 {
+                    format!("{}M", m.context_window / 1_000_000)
+                } else {
+                    format!("{}K", m.context_window / 1000)
+                };
+                lines.push(
+                    Line::from(Span::from(format!(
+                        "  {} [{}] {} {}{}",
+                        if is_model_active { "◆" } else { "○" },
+                        m.tier,
+                        ctx,
+                        m.id,
+                        marker
+                    )))
+                    .style(Style::default().fg(mf).bg(mb)),
+                );
+            }
+        }
+
+        lines
     }
 }
 
@@ -246,22 +449,24 @@ impl Component for Sidebar {
 
         // ── 计算各区域高度 ──
         let top_h = 3u16; // ACTIVE SESSION 标题 + 会话行 + 空行
-        let footer_h = FOOTER_LINES;
-        let mid_h = inner.height.saturating_sub(top_h + footer_h).max(1);
-
-        // 如果终端太矮，优先保留 top 和 mid
-        let actual_footer_h = if inner.height < top_h + footer_h {
-            inner.height.saturating_sub(top_h).min(footer_h)
+                          // 统一用 14 行上限，footer 内容实际撑多高就是多高，不因子区切换跳动
+        const MAX_FOOTER: u16 = 14;
+        let max_footer = MAX_FOOTER;
+        let provisional = self.render_footer(inner.width, max_footer, theme);
+        let footer_content_h = (provisional.len() as u16).clamp(FOOTER_LINES, max_footer);
+        let footer_h = if inner.height < top_h + FOOTER_LINES {
+            inner.height.saturating_sub(top_h).min(FOOTER_LINES)
         } else {
-            footer_h
+            footer_content_h.min(inner.height.saturating_sub(top_h + 1))
         };
+        let mid_h = inner.height.saturating_sub(top_h + footer_h).max(1);
 
         let sections = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 ratatui::layout::Constraint::Length(top_h),
                 ratatui::layout::Constraint::Length(mid_h),
-                ratatui::layout::Constraint::Length(actual_footer_h),
+                ratatui::layout::Constraint::Length(footer_h),
             ])
             .split(inner);
 
@@ -274,11 +479,7 @@ impl Component for Sidebar {
         } else {
             Line::from(" ACTIVE SESSION".to_string().fg(theme.heading).bold())
         };
-        let top_lines = vec![
-            top_title,
-            self.render_active_session(theme),
-            Line::from(""),
-        ];
+        let top_lines = vec![top_title, self.render_active_session(theme), Line::from("")];
 
         // ── 中部：工作区树（带内部滚动） ──
         let mut ws_lines: Vec<Line<'static>> = Vec::new();
@@ -336,13 +537,11 @@ impl Component for Sidebar {
             .alignment(Alignment::Left);
         f.render_widget(ws_para, sections[1]);
 
-        // ── 底部：模型 + Token（固定，不随工作区滚动） ──
-        let footer_lines = self.render_footer(sections[2].width, theme);
-        let visible_footer: Vec<Line<'static>> = footer_lines
+        // ── 底部：模型 + Token（使用预渲染内容，精确匹配高度） ──
+        let mut footer_lines: Vec<Line<'static>> = provisional
             .into_iter()
             .take(sections[2].height as usize)
             .collect();
-        let mut footer_lines = visible_footer;
         selection::apply_selection(&mut footer_lines, sections[2], &mut self.selection, theme);
 
         let footer_para = Paragraph::new(footer_lines)

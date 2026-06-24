@@ -14,32 +14,75 @@ use crate::backend::rpc::PiRpcBackend;
 use crate::errors::Result;
 use crate::message::ToolStatus;
 
-/// 将 PiEvent 翻译为 Action
-fn translate_pi_event(event: PiEvent, agent_id: &str) -> Option<Action> {
-    match event {
+/// 将 PiEvent 翻译为一个或多个 Action
+///
+/// 对于 MessageUpdate，同时发出 delta 事件（打字机效果）和 ContentUpdate（块数组快照）。
+fn translate_pi_events(event: PiEvent, agent_id: &str) -> Vec<Action> {
+    let mut actions = Vec::new();
+    match &event {
         PiEvent::MessageUpdate {
-            assistant_event, ..
-        } => match assistant_event.event_type {
-            AssistantEventType::TextDelta => Some(Action::MessageAppend {
-                agent_id: agent_id.into(),
-                text: assistant_event.delta.unwrap_or_default(),
-            }),
-            AssistantEventType::ThinkingDelta => Some(Action::ThinkingAppend {
-                agent_id: agent_id.into(),
-                text: assistant_event.delta.unwrap_or_default(),
-            }),
-            AssistantEventType::ThinkingEnd => Some(Action::ThinkingFinalize {
-                agent_id: agent_id.into(),
-                text: assistant_event.delta.unwrap_or_default(),
-            }),
-            AssistantEventType::MessageEnd | AssistantEventType::Done => {
-                Some(Action::MessageFinalize {
-                    agent_id: agent_id.into(),
-                })
+            assistant_event,
+            message,
+            ..
+        } => {
+            // 1. delta 事件（打字机效果）
+            match assistant_event.event_type {
+                AssistantEventType::TextDelta => {
+                    tracing::debug!("MSG: text_delta");
+                    actions.push(Action::MessageAppend {
+                        agent_id: agent_id.into(),
+                        text: assistant_event.delta.clone().unwrap_or_default(),
+                    });
+                }
+                AssistantEventType::ThinkingDelta => {
+                    actions.push(Action::ThinkingAppend {
+                        agent_id: agent_id.into(),
+                        text: assistant_event.delta.clone().unwrap_or_default(),
+                    });
+                }
+                AssistantEventType::ThinkingEnd => {
+                    actions.push(Action::ThinkingFinalize {
+                        agent_id: agent_id.into(),
+                        text: assistant_event.delta.clone().unwrap_or_default(),
+                    });
+                }
+                AssistantEventType::MessageEnd | AssistantEventType::Done => {
+                    actions.push(Action::MessageFinalize {
+                        agent_id: agent_id.into(),
+                    });
+                }
+                ref other => {
+                    tracing::debug!("MSG: unhandled delta type {:?}", other);
+                }
             }
-            _ => None,
-        },
+            // 2. ContentUpdate（块数组快照）
+            if let Some(ref data) = message {
+                tracing::debug!("MSG: content_update {} blocks", data.content.len());
+                actions.push(Action::ContentUpdate {
+                    agent_id: agent_id.into(),
+                    content: data.content.clone(),
+                });
+                // 若有错误信息，同时发出状态消息
+                if let Some(ref err) = data.error_message {
+                    actions.push(Action::AutoRetryStatus {
+                        agent_id: agent_id.into(),
+                        text: format!("错误: {}", err),
+                    });
+                }
+            }
+        }
+        _ => {
+            if let Some(a) = translate_single_action(event, agent_id) {
+                actions.push(a);
+            }
+        }
+    }
+    actions
+}
 
+/// 处理非 MessageUpdate 事件的单 Action 翻译（保留原 translate_pi_event 逻辑）
+fn translate_single_action(event: PiEvent, agent_id: &str) -> Option<Action> {
+    match event {
         PiEvent::AgentStart => Some(Action::AgentStatusChange {
             agent_id: agent_id.into(),
             status: AgentStatus::Running,
@@ -92,7 +135,66 @@ fn translate_pi_event(event: PiEvent, agent_id: &str) -> Option<Action> {
             })
         }
 
-        _ => None,
+        PiEvent::MessageEnd { message } => {
+            let agent_id = agent_id.to_string();
+            let text = message
+                .as_ref()
+                .and_then(|m| m.error_message.as_deref())
+                .unwrap_or("(message end)");
+            Some(Action::AutoRetryStatus {
+                agent_id,
+                text: format!("Message end: {}", text),
+            })
+        }
+
+        PiEvent::AutoRetryStart {
+            attempt,
+            max_attempts,
+            delay_ms,
+            error_message,
+        } => {
+            let agent_id = agent_id.to_string();
+            let err = error_message.as_deref().unwrap_or("unknown error");
+            Some(Action::AutoRetryStatus {
+                agent_id,
+                text: format!(
+                    "自动重试 {}/{} ({}ms 后): {}",
+                    attempt, max_attempts, delay_ms, err
+                ),
+            })
+        }
+
+        PiEvent::AutoRetryEnd {
+            success,
+            final_error,
+        } => {
+            let agent_id = agent_id.to_string();
+            if success {
+                Some(Action::AutoRetryStatus {
+                    agent_id,
+                    text: "重试成功".to_string(),
+                })
+            } else {
+                let err = final_error.as_deref().unwrap_or("unknown");
+                Some(Action::AutoRetryStatus {
+                    agent_id,
+                    text: format!("全部重试失败: {}", err),
+                })
+            }
+        }
+
+        PiEvent::MessageStart { role } => {
+            let agent_id = agent_id.to_string();
+            Some(Action::AutoRetryStatus {
+                agent_id,
+                text: format!("消息开始: role={}", role),
+            })
+        }
+
+        ref other => {
+            tracing::debug!("EVENT: unhandled {:?}", std::mem::discriminant(other));
+            None
+        }
     }
 }
 
@@ -189,6 +291,91 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
     }
 
     tracing::info!("pi 已安装: {:?}", pi_version);
+
+    // ============================================================
+    // 先启动 Provider Router + 生成 local-provider.ts
+    // 必须在 pi 启动之前完成，否则 pi 加载扩展时找不到 local provider
+    // ============================================================
+    let (router_port, shared_config) = {
+        let config_path = crate::provider::config_path();
+        let provider_cfg = crate::provider::ProviderConfig::load(&config_path);
+        app.tui.providers.clone_from(&provider_cfg.providers);
+        if let Some(ref m) = provider_cfg.current_model {
+            app.tui.current_model.clone_from(m);
+        }
+        let initial_port = provider_cfg.port;
+        let shared = crate::provider::SharedConfig::new(tokio::sync::RwLock::new(provider_cfg));
+
+        // 生成 local-provider.ts（必须在 pi 启动前写入）
+        let ts_content = crate::provider::generate_local_provider_ts(
+            &*shared.read().await,
+            shared.read().await.port,
+        );
+        let pi_home = std::env::var("PI_CODING_AGENT_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| {
+                std::env::var("HOME")
+                    .map(|h| std::path::PathBuf::from(h).join(".pi").join("agent"))
+                    .unwrap_or_default()
+            });
+        let ext_dir = pi_home.join("extensions");
+        let _ = std::fs::create_dir_all(&ext_dir);
+        let _ = std::fs::write(ext_dir.join("local-provider.ts"), &ts_content);
+        let model_count: usize = shared
+            .read()
+            .await
+            .providers
+            .iter()
+            .map(|p| p.models.len())
+            .sum();
+        tracing::info!("local-provider.ts generated with {} models", model_count);
+
+        // 启动 axum router
+        let router_shared = shared.clone();
+        let (port_tx, mut port_rx) = tokio::sync::oneshot::channel::<u16>();
+        app.tui.router_running = true;
+        tokio::spawn(async move {
+            match crate::provider::router::start_router(router_shared).await {
+                Ok(actual_port) => {
+                    tracing::info!("Provider router started on port {}", actual_port);
+                    let _ = port_tx.send(actual_port);
+                }
+                Err(e) => {
+                    tracing::error!("Provider router failed: {}", e);
+                }
+            }
+        });
+        // 给 axum 一点时间绑定端口
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let actual_port = match port_rx.try_recv() {
+            Ok(p) => p,
+            _ => initial_port,
+        };
+        (actual_port, shared)
+    };
+
+    app.tui.router_port = router_port;
+    app.tui.shared_config = Some(shared_config);
+
+    // 自检：验证 router 是否可达
+    {
+        let test_url = format!("http://127.0.0.1:{}/v1/models", router_port);
+        match reqwest::get(&test_url).await {
+            Ok(resp) => {
+                tracing::info!(
+                    "Router 自检通过: GET /v1/models → status={}",
+                    resp.status().as_u16()
+                );
+            }
+            Err(e) => {
+                tracing::error!("Router 自检失败: {} — pi 将无法使用 TUI 路由", e);
+            }
+        }
+    }
+
+    // ============================================================
+    // 启动 pi（此时 local-provider.ts 已就绪）
+    // ============================================================
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let mut backend = PiRpcBackend::new("pi", &cwd);
     let mut client = match backend.start(None).await {
@@ -218,6 +405,21 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
 
     app.agent_status = AgentStatus::Idle;
 
+    // 启动后立即发送初始模型（否则 pi 不知道用哪个模型）
+    let initial_model = app.tui.current_model.clone();
+    if !initial_model.is_empty() {
+        tracing::info!("发送初始模型: {}", initial_model);
+        let _ = client
+            .notify(serde_json::json!({
+                "type": "set_model",
+                "provider": "local",
+                "modelId": initial_model,
+            }))
+            .await;
+    } else {
+        tracing::warn!("无初始模型 — 请在 MODEL 区选择一个模型");
+    }
+
     // 扫描 session 目录，填充工作区数据
     app.populate_workspaces();
     // 扫描 agents 目录，填充 subagent 列表
@@ -228,6 +430,7 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
     app.populate_mcps();
 
     let agent_id = app.active_agent.clone().unwrap_or_default();
+    tracing::info!("TUI 主循环开始，active_agent={:?}", agent_id);
     let mut input_buffer = String::new();
 
     // 焦点状态由 App 通过 focus_panel 管理
@@ -247,9 +450,13 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
         tokio::select! {
             // 定时刷新
             _ = ticker.tick() => {
-                // 处理 pi 事件
+                // 处理 pi 事件（支持多 Action 返回，如 ContentUpdate + delta）
                 while let Ok(event) = client.event_rx.try_recv() {
-                    if let Some(action) = translate_pi_event(event, &agent_id) {
+                    tracing::debug!("EVENT: {:?}", std::mem::discriminant(&event));
+                    let actions = translate_pi_events(event, &agent_id);
+                    tracing::debug!("  -> {} actions", actions.len());
+                    for (i, action) in actions.into_iter().enumerate() {
+                        tracing::debug!("  ACTION[{}]: {:?}", i, std::mem::discriminant(&action));
                         if let Err(e) = app.handle_action(action).await {
                             tracing::error!("handle_action error: {}", e);
                         }
@@ -257,6 +464,30 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                 }
                 // 同步输入缓冲区到 main_view
                 app.tui.main_view.input_buffer.clone_from(&input_buffer);
+                // 检查模型列表拉取结果
+                if let Some(mut rx) = app.tui.models_fetch_rx.take() {
+                    match rx.try_recv() {
+                        Ok(Some(models_text)) => {
+                            if let Some(ref mut editor) = app.tui.provider_editor {
+                                editor.models_text = models_text;
+                                editor.models_fetching = false;
+                            }
+                        }
+                        Ok(None) => {
+                            if let Some(ref mut editor) = app.tui.provider_editor {
+                                editor.models_fetching = false;
+                            }
+                        }
+                        Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
+                            app.tui.models_fetch_rx = Some(rx);
+                        }
+                        Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                            if let Some(ref mut editor) = app.tui.provider_editor {
+                                editor.models_fetching = false;
+                            }
+                        }
+                    }
+                }
                 // 渲染
                 let _ = terminal.try_draw(|f| {
                     app.render_tui(f);
@@ -423,12 +654,58 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                         crossterm::event::KeyCode::Up
                             if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) =>
                         {
-                            app.handle_action(Action::CycleFocusSubsection(-1)).await.ok();
+                            // MainView + Messages 子区中：块导航
+                            // 其他面板：焦点子区循环
+                            if *focus == crate::app::FocusPanel::MainView
+                                && app.tui.main_view_subsection
+                                    == crate::app::MainViewSubsection::Messages
+                            {
+                                let blocks =
+                                    crate::message::build_block_refs(&app.tui.main_view.messages);
+                                let cur = app.tui.main_view.block_cursor;
+                                if cur > 0 && !blocks.is_empty() {
+                                    app.tui.main_view.block_cursor = cur - 1;
+                                    if let Some(bref) =
+                                        blocks.get(app.tui.main_view.block_cursor)
+                                    {
+                                        app.tui.message_cursor = bref.msg_index;
+                                        app.tui.scroll_mode =
+                                            crate::app::ScrollMode::Pinned;
+                                    }
+                                }
+                            } else {
+                                app.handle_action(Action::CycleFocusSubsection(-1))
+                                    .await
+                                    .ok();
+                            }
                         }
                         crossterm::event::KeyCode::Down
                             if key.modifiers.contains(crossterm::event::KeyModifiers::ALT) =>
                         {
-                            app.handle_action(Action::CycleFocusSubsection(1)).await.ok();
+                            // MainView + Messages 子区中：块导航
+                            // 其他面板：焦点子区循环
+                            if *focus == crate::app::FocusPanel::MainView
+                                && app.tui.main_view_subsection
+                                    == crate::app::MainViewSubsection::Messages
+                            {
+                                let blocks =
+                                    crate::message::build_block_refs(&app.tui.main_view.messages);
+                                let cur = app.tui.main_view.block_cursor;
+                                if cur + 1 < blocks.len() {
+                                    app.tui.main_view.block_cursor = cur + 1;
+                                    if let Some(bref) =
+                                        blocks.get(app.tui.main_view.block_cursor)
+                                    {
+                                        app.tui.message_cursor = bref.msg_index;
+                                        app.tui.scroll_mode =
+                                            crate::app::ScrollMode::Pinned;
+                                    }
+                                }
+                            } else {
+                                app.handle_action(Action::CycleFocusSubsection(1))
+                                    .await
+                                    .ok();
+                            }
                         }
 
                         // Ctrl+C: 退出
@@ -449,9 +726,28 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                             app.agent_status = AgentStatus::Idle;
                         }
 
-                        // Esc: 关闭 Popup
+                        // Esc: 退出详情视图 / 关闭 Popup / 编辑表单
                         crossterm::event::KeyCode::Esc => {
-                            if app.tui.popup.visible {
+                            if app.tui.main_view.completion_popup.is_some() {
+                                app.tui.main_view.completion_popup = None;
+                            } else if app.tui.main_view.entered_view.is_some() {
+                                app.handle_action(Action::ExitBlock).await.ok();
+                            } else if app.tui.provider_editor.is_some() {
+                                let has_mgr = app
+                                    .tui
+                                    .provider_editor
+                                    .as_ref()
+                                    .map(|e| e.model_mgr.is_some())
+                                    .unwrap_or(false);
+                                if has_mgr {
+                                    // model_mgr 打开时，Esc 先关闭它
+                                    app.tui.handle_provider_key(key.code);
+                                } else {
+                                    app.tui.provider_editor = None;
+                                }
+                            } else if app.tui.provider_popup.is_some() {
+                                app.tui.provider_popup = None;
+                            } else if app.tui.popup.visible {
                                 app.tui.popup.visible = false;
                             }
                         }
@@ -498,12 +794,85 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                             }
                         }
 
-                        // ── MainView + Messages 子区：↑/↓ 消息切换，Enter 弹出 ──
+                        // Sidebar + Provider: 委托给 TuiState 处理
+                        _ if *focus == crate::app::FocusPanel::Sidebar
+                            && app.tui.sidebar_subsection
+                                == crate::app::SidebarSubsection::Provider =>
+                        {
+                            app.tui.handle_provider_key(key.code);
+                            // 检查是否需要自动拉取模型列表
+                            if let Some(ref editor) = app.tui.provider_editor {
+                                if editor.models_fetching && app.tui.models_fetch_rx.is_none() {
+                                    let base_url = editor.draft.base_url.trim().to_string();
+                                    let api_key = editor.draft.api_key.trim().to_string();
+                                    if !base_url.is_empty() && !api_key.is_empty() {
+                                        let (tx, rx) = tokio::sync::oneshot::channel();
+                                        app.tui.models_fetch_rx = Some(rx);
+                                        tokio::spawn(async move {
+                                            let result =
+                                                crate::provider::fetch_models_list(&base_url, &api_key)
+                                                    .await;
+                                            let _ = tx.send(result);
+                                        });
+                                    }
+                                }
+                            }
+                        }
+
+                        // Sidebar + Model: 委托给 TuiState 处理
+                        _ if *focus == crate::app::FocusPanel::Sidebar
+                            && app.tui.sidebar_subsection
+                                == crate::app::SidebarSubsection::Model =>
+                        {
+                            app.tui.handle_model_key(key.code);
+                            // 同步模型选择到 pi（通过 RPC set_model）
+                            if app.tui.model_just_switched {
+                                app.tui.model_just_switched = false;
+                                let model_id = app.tui.current_model.clone();
+                                if !model_id.is_empty() {
+                                    // 保存到磁盘并同步到 router 共享内存配置
+                                    app.tui.sync_provider_config();
+                                    // 通知 pi 切换模型
+                                    let _ = client.request(
+                                        serde_json::json!({
+                                            "type": "set_model",
+                                            "provider": "local",
+                                            "modelId": model_id,
+                                        }),
+                                        std::time::Duration::from_secs(5),
+                                    ).await;
+                                }
+                            }
+                        }
+
                         _ if *focus == crate::app::FocusPanel::MainView
                             && app.tui.main_view_subsection
                                 == crate::app::MainViewSubsection::Messages =>
                         {
                             match key.code {
+                                // EnteredView 内 ↑/↓ 滚动
+                                crossterm::event::KeyCode::Up
+                                    if app.tui.main_view.entered_view.is_some() =>
+                                {
+                                    if let Some(crate::message::EnteredView::FullOutput {
+                                        ref mut scroll,
+                                        ..
+                                    }) = app.tui.main_view.entered_view
+                                    {
+                                        *scroll = scroll.saturating_sub(1);
+                                    }
+                                }
+                                crossterm::event::KeyCode::Down
+                                    if app.tui.main_view.entered_view.is_some() =>
+                                {
+                                    if let Some(crate::message::EnteredView::FullOutput {
+                                        ref mut scroll,
+                                        ..
+                                    }) = app.tui.main_view.entered_view
+                                    {
+                                        *scroll += 1;
+                                    }
+                                }
                                 crossterm::event::KeyCode::Up => {
                                     let cur = app.tui.message_cursor;
                                     if cur > 0 {
@@ -523,24 +892,67 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                                     }
                                 }
                                 crossterm::event::KeyCode::Enter => {
-                                    if let Some(msg) = app
-                                        .tui
-                                        .main_view
-                                        .messages
-                                        .get(app.tui.message_cursor)
+                                    // 块选中时进入详情视图
+                                    let blocks = crate::message::build_block_refs(
+                                        &app.tui.main_view.messages,
+                                    );
+                                    if !blocks.is_empty()
+                                        && app.tui.main_view.block_cursor < blocks.len()
+                                        && app.tui.main_view.entered_view.is_none()
                                     {
-                                        let title = match msg.role {
-                                            crate::message::ChatRole::User => "你".into(),
-                                            crate::message::ChatRole::Assistant => "pi".into(),
-                                            crate::message::ChatRole::Tool => {
-                                                "工具".into()
-                                            }
-                                            crate::message::ChatRole::System => "系统".into(),
-                                            crate::message::ChatRole::Error => "错误".into(),
-                                        };
-                                        app.tui.popup.title = title;
-                                        app.tui.popup.description = msg.text.clone();
-                                        app.tui.popup.visible = true;
+                                        let bref = &blocks[app.tui.main_view.block_cursor];
+                                        app.handle_action(Action::EnterBlock {
+                                            agent_id: agent_id.clone(),
+                                            msg_id: bref.msg_id.clone(),
+                                            block_index: bref.block_index,
+                                        })
+                                        .await
+                                        .ok();
+                                    } else if app.tui.main_view.entered_view.is_none() {
+                                        // 无块选中时打开消息弹出（原行为）
+                                        if let Some(msg) = app
+                                            .tui
+                                            .main_view
+                                            .messages
+                                            .get(app.tui.message_cursor)
+                                        {
+                                            let title = match msg.role {
+                                                crate::message::ChatRole::User => {
+                                                    "你".into()
+                                                }
+                                                crate::message::ChatRole::Assistant => {
+                                                    "pi".into()
+                                                }
+                                                crate::message::ChatRole::Tool => {
+                                                    "工具".into()
+                                                }
+                                                crate::message::ChatRole::System => {
+                                                    "系统".into()
+                                                }
+                                                crate::message::ChatRole::Error => {
+                                                    "错误".into()
+                                                }
+                                            };
+                                            app.tui.popup.title = title;
+                                            app.tui.popup.description = msg.text.clone();
+                                            app.tui.popup.visible = true;
+                                        }
+                                    }
+                                }
+                                crossterm::event::KeyCode::Char(' ') => {
+                                    // Space 通过 Action 切换块的折叠/展开
+                                    let blocks = crate::message::build_block_refs(
+                                        &app.tui.main_view.messages,
+                                    );
+                                    if app.tui.main_view.block_cursor < blocks.len() {
+                                        let bref = &blocks[app.tui.main_view.block_cursor];
+                                        app.handle_action(Action::ToggleBlock {
+                                            agent_id: agent_id.clone(),
+                                            msg_id: bref.msg_id.clone(),
+                                            block_index: bref.block_index,
+                                        })
+                                        .await
+                                        .ok();
                                     }
                                 }
                                 _ => {}
@@ -557,28 +969,97 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                                     app.tui.main_view_subsection =
                                         crate::app::MainViewSubsection::Messages;
                                 }
-                                crossterm::event::KeyCode::Char(c) => {
-                                    input_buffer.push(c);
+                                // / 触发命令补全（仅输入框为空时）
+                                crossterm::event::KeyCode::Char('/')
+                                    if input_buffer.is_empty() =>
+                                {
+                                    input_buffer.push('/');
+                                    app.tui.main_view.completion_popup = Some(
+                                        crate::message::CompletionPopup {
+                                            items: vec![
+                                                crate::message::CompletionItem {
+                                                    label: "skill-creator".into(),
+                                                    value: "/skill:skill-creator ".into(),
+                                                    prefix: "⚡".into(),
+                                                },
+                                                crate::message::CompletionItem {
+                                                    label: "skill-finder".into(),
+                                                    value: "/skill:skill-finder ".into(),
+                                                    prefix: "⚡".into(),
+                                                },
+                                            ],
+                                            cursor: 0,
+                                            trigger: '/',
+                                            filter: String::new(),
+                                        },
+                                    );
                                 }
+                                // @ 触发文件补全
+                                crossterm::event::KeyCode::Char('@') => {
+                                    input_buffer.push('@');
+                                    app.tui.main_view.completion_popup = Some(
+                                        crate::message::CompletionPopup {
+                                            items: vec![
+                                                crate::message::CompletionItem {
+                                                    label: "src/main.rs".into(),
+                                                    value: "@src/main.rs ".into(),
+                                                    prefix: "📁".into(),
+                                                },
+                                            ],
+                                            cursor: 0,
+                                            trigger: '@',
+                                            filter: String::new(),
+                                        },
+                                    );
+                                }
+                                // Tab: 补全 popup 下移
+                                crossterm::event::KeyCode::Tab
+                                    if app.tui.main_view.completion_popup.is_some() =>
+                                {
+                                    if let Some(ref mut popup) =
+                                        app.tui.main_view.completion_popup
+                                    {
+                                        if popup.cursor + 1 < popup.items.len() {
+                                            popup.cursor += 1;
+                                        }
+                                    }
+                                }
+                                // Enter: 补全 popup 选中 / 发送消息
+                                crossterm::event::KeyCode::Enter => {
+                                    if let Some(popup) =
+                                        app.tui.main_view.completion_popup.take()
+                                    {
+                                        if let Some(item) = popup.items.get(popup.cursor) {
+                                            input_buffer = item.value.clone();
+                                        }
+                                    } else {
+                                        let trimmed = input_buffer.trim().to_string();
+                                        if !trimmed.is_empty() {
+                                            input_buffer.clear();
+                                            app.handle_action(Action::UserSubmitInput(
+                                                trimmed.clone(),
+                                            ))
+                                            .await
+                                            .ok();
+                                            let _ = client
+                                                .notify(serde_json::json!({
+                                                    "type": "prompt",
+                                                    "message": trimmed,
+                                                }))
+                                                .await;
+                                        }
+                                    }
+                                }
+                                // Backspace: 删除字符，清空时关闭 popup
                                 crossterm::event::KeyCode::Backspace => {
                                     input_buffer.pop();
-                                }
-                                crossterm::event::KeyCode::Enter => {
-                                    let trimmed = input_buffer.trim().to_string();
-                                    if !trimmed.is_empty() {
-                                        input_buffer.clear();
-                                        app.handle_action(Action::UserSubmitInput(
-                                            trimmed.clone(),
-                                        ))
-                                        .await
-                                        .ok();
-                                        let _ = client
-                                            .notify(serde_json::json!({
-                                                "type": "prompt",
-                                                "message": trimmed,
-                                            }))
-                                            .await;
+                                    if input_buffer.is_empty() {
+                                        app.tui.main_view.completion_popup = None;
                                     }
+                                }
+                                // 通用字符输入
+                                crossterm::event::KeyCode::Char(c) => {
+                                    input_buffer.push(c);
                                 }
                                 _ => {}
                             }

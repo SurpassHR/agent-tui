@@ -68,6 +68,10 @@ impl PiRpcBackend {
         let mut cmd = Command::new(&self.command);
         cmd.arg("--mode");
         cmd.arg("rpc");
+        // 使用 TUI 内置的 local provider 路由
+        cmd.arg("--provider");
+        cmd.arg("local");
+        tracing::info!("启动 pi 时指定 provider=local");
 
         if let Some(path) = session_path {
             // 指定 session 文件：持久化，不用 --no-session
@@ -97,6 +101,21 @@ impl PiRpcBackend {
             .take()
             .ok_or_else(|| crate::errors::Error::Subprocess("failed to take stdout".to_string()))?;
         let _stderr = child.stderr.take();
+
+        // 读取 pi 的 stderr 并写入 tracing 日志（诊断扩展加载/错误）
+        if let Some(stderr) = _stderr {
+            tokio::spawn(async move {
+                use tokio::io::AsyncBufReadExt;
+                let reader = tokio::io::BufReader::new(stderr);
+                let mut lines = reader.lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    let trimmed = line.trim().to_string();
+                    if !trimmed.is_empty() {
+                        tracing::warn!("pi stderr: {}", trimmed);
+                    }
+                }
+            });
+        }
 
         let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
         let (protocol_err_tx, protocol_err_rx) = tokio::sync::mpsc::unbounded_channel();

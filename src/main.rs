@@ -4,7 +4,7 @@ use meta_tui::backend::rpc::PiRpcBackend;
 
 fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
-    meta_tui::logging::init()?;
+    let _log_guard = meta_tui::logging::init()?;
     let config = meta_tui::config::Config::from_args();
 
     if config.dry_run {
