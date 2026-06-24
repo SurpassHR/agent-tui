@@ -331,6 +331,8 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
         if let Some(ref m) = provider_cfg.current_model {
             app.tui.current_model.clone_from(m);
         }
+        // 根据 current_model 恢复上次选中的 provider
+        app.tui.active_provider_idx = app.tui.active_provider_index();
         let initial_port = provider_cfg.port;
         let shared = crate::provider::SharedConfig::new(tokio::sync::RwLock::new(provider_cfg));
 
