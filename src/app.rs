@@ -210,6 +210,8 @@ pub struct TuiState {
     pub mcps: Vec<McpInfo>,
     /// Agent 面板内 MCP 列表选中光标
     pub mcp_cursor: usize,
+    /// 持久化禁用标记（单元测试设为 true 以避免污染真实配置文件）
+    pub persistence_disabled: bool,
 }
 
 /// 鼠标选中所在的栏
@@ -400,6 +402,7 @@ impl TuiState {
             provider_popup: None,
             provider_editor: None,
             models_fetch_rx: None,
+            persistence_disabled: false,
         }
     }
 
@@ -572,6 +575,10 @@ impl TuiState {
 
     /// 统一保存 provider 配置到磁盘，并同步更新与 router 共享的内存配置
     pub fn sync_provider_config(&self) {
+        // 持久化是否被禁用（单元测试关闭以避免污染真实配置）
+        if self.persistence_disabled {
+            return;
+        }
         let path = crate::provider::config_path();
         let cfg = crate::provider::ProviderConfig {
             port: self.router_port,
@@ -3603,6 +3610,7 @@ mod tests {
     #[test]
     fn test_provider_d_key_clears_active_idx_when_disabling_active() {
         let mut state = TuiState::new();
+        state.persistence_disabled = true;
         state.providers = vec![crate::provider::ProviderInfo {
             id: "ds".into(),
             name: "DS".into(),
@@ -3642,6 +3650,7 @@ mod tests {
     fn test_provider_d_key_keeps_active_idx_when_disabling_inactive() {
         // 禁用非活跃 Provider 不应清除 active_provider_idx
         let mut state = TuiState::new();
+        state.persistence_disabled = true;
         state.providers = vec![
             crate::provider::ProviderInfo {
                 id: "a".into(),
