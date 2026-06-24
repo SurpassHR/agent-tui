@@ -489,8 +489,24 @@ impl TuiState {
                             model_mgr: None,
                         });
                     } else if !self.providers.is_empty() {
-                        self.open_edit_provider_editor(self.provider_cursor);
+                        // Enter → 打开 provider 详情 popup（不进入编辑）
+                        self.provider_popup = Some(self.provider_cursor);
                     }
+                    true
+                }
+                KeyCode::Char(' ') if !self.providers.is_empty() && self.provider_cursor < self.providers.len() => {
+                    // Space → 直接激活 provider（切换到第一个模型）
+                    if let Some(p) = self.providers.get(self.provider_cursor) {
+                        if let Some(first) = p.models.first() {
+                            self.current_model = first.id.clone();
+                            self.model_just_switched = true;
+                        }
+                    }
+                    true
+                }
+                KeyCode::Char('e') if !self.providers.is_empty() && self.provider_cursor < self.providers.len() => {
+                    // e → 编辑 provider
+                    self.open_edit_provider_editor(self.provider_cursor);
                     true
                 }
                 KeyCode::Left | KeyCode::Esc => true,
@@ -1694,7 +1710,7 @@ impl App {
                 }
                 ln.push(Line::from(""));
                 ln.push(Line::from(
-                    Span::from("  [Esc] close  [Enter] activate").fg(theme.text_dim),
+                    Span::from("  [Enter] activate  [e] edit  [Esc] close").fg(theme.text_dim),
                 ));
                 f.render_widget(
                     ratatui::widgets::Paragraph::new(ln)
@@ -2730,16 +2746,13 @@ mod tests {
 
         state.handle_provider_key(crossterm::event::KeyCode::Enter);
 
-        let editor = state
-            .provider_editor
-            .as_ref()
-            .expect("Enter 应该打开 Provider 编辑表单");
-        assert!(!editor.is_new, "编辑已有 provider 时 is_new 应为 false");
-        assert_eq!(
-            editor.draft.id, "deepseek",
-            "编辑表单应预填充 provider 数据"
+        // Enter 现在打开 popup（不直接进入编辑）
+        assert!(
+            state.provider_popup.is_some(),
+            "Enter 应该打开 Provider 详情 popup"
         );
-        assert_eq!(state.provider_popup, None, "不应同时打开 popup");
+        assert_eq!(state.provider_popup, Some(0));
+        assert!(state.provider_editor.is_none(), "不应同时打开编辑器");
     }
 
     #[test]
