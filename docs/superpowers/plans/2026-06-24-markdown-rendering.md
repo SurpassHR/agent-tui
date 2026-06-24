@@ -1,11 +1,107 @@
+# Markdown 渲染支持 实施方案
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** 为 TUI 对话区的助手消息文本内容增加 Markdown 渲染支持，将原始的 Markdown 文本转换为带样式的 Ratatui Span/Line。
+
+**Architecture:** 使用 pulldown-cmark 0.12 解析 Markdown AST，在 `src/components/markdown.rs` 中构建自定义渲染器，将 AST 事件流转换为 `Vec<Line<'static>>`。渲染器处理所有常用 Markdown 块级和内联语法（标题、粗体、斜体、删除线、代码块/内联代码、引用块、有序/无序列表、链接、水平分割线），通过 Theme 中新增的 markdown 专用颜色与现有主题风格融合。
+
+**Tech Stack:** Ratatui 0.30.2, pulldown-cmark 0.12, edition 2021
+
+## Global Constraints
+
+- Edition 2021，MSRV 1.85
+- 错误处理：公开 API 返回 `anyhow::Result`；内部使用 `color-eyre`；禁止 `unwrap()`
+- 所有 `pub fn` / `pub struct` 必须有 `///` 文档注释
+- 新增 variant 或字段时同步更新所有 `match` 分支和使用点
+- `cargo clippy -- -D warnings` 必须零警告
+- 不修改 `target/`、`.codegraph/`、`Cargo.toml` 中已有的依赖项
+- 所有 BLOCK 级别元素（代码块、引用块）独立成行
+
+---
+
+## 文件结构
+
+| 文件 | 职责 |
+|---|---|
+| `Cargo.toml` | 新增 `pulldown-cmark` 依赖 |
+| `src/theme.rs` | 新增 7 个 markdown 专用颜色字段 + `cyan()` 默认值 |
+| `src/components/markdown.rs` | **新建** — Markdown → `Vec<Line<'static>>` 渲染器 |
+| `src/components/mod.rs` | 注册 `pub mod markdown` |
+| `src/components/main_view.rs` | 在 `render_message` 中调用 `markdown::render()` 替代原始 `parse_ansi_spans` |
+
+---
+
+### Task 1: 添加 pulldown-cmark 依赖
+
+**Files:**
+- Modify: `Cargo.toml`
+
+**Interfaces:**
+- Consumes: 无
+- Produces: `pulldown-cmark = "0.12"`（features: 无额外 feature，默认启用 `html` 和 `simd`）
+
+- [ ] **Step 1: 编辑 Cargo.toml 添加依赖**
+
+```toml
+# 在 [dependencies] 末尾新增一行：
+pulldown-cmark = "0.12"
+```
+
+- [ ] **Step 2: 下载依赖验证编译**
+
+```bash
+cargo fetch
+```
+Expected: 无错误，pulldown-cmark 被下载。
+
+- [ ] **Step 3: 验证
+
+```bash
+cargo check
+```
+Expected: 编译成功（新依赖被引入但尚未使用，不应有警告）。
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add Cargo.toml Cargo.lock
+git commit -m "chore(deps): 添加 pulldown-cmark 0.12"
+```
+
+---
+
+### Task 2: 创建 Markdown 渲染模块
+
+**Files:**
+- Create: `src/components/markdown.rs`
+- Modify: `src/components/mod.rs`
+
+**Interfaces:**
+- Consumes: `Theme` (from `crate::theme`), `pulldown_cmark::{Parser, Event, Tag, TagEnd, HeadingLevel, CodeBlockKind}`
+- Produces: `pub fn render(text: &str, theme: &Theme) -> Vec<Line<'static>>`
+
+- [ ] **Step 1: 注册模块**
+
+编辑 `src/components/mod.rs`，在 `pub mod popup;` 后新增一行：
+
+```rust
+pub mod markdown;
+```
+
+- [ ] **Step 2: 编写完整渲染器**
+
+创建 `src/components/markdown.rs`，写入以下完整实现：
+
+```rust
 //! Markdown 渲染器 — 将 Markdown 文本转换为带样式的 Ratatui Line
 //!
 //! 基于 pulldown-cmark 解析 Markdown AST，遍历事件流生成 `Vec<Line<'static>>`。
 //! 支持所有常用语法：标题、粗体/斜体/删除线、内联代码、围栏代码块、
 //! 引用块、有序/无序列表、链接、水平分割线。
 
-use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
-use ratatui::style::{Modifier, Style};
+use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Parser, Tag, TagEnd};
+use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 
 use crate::theme::Theme;
@@ -29,10 +125,7 @@ pub fn render(text: &str, theme: &Theme) -> Vec<Line<'static>> {
             .collect();
     }
 
-    let mut options = Options::empty();
-    options.insert(Options::ENABLE_TABLES);
-    options.insert(Options::ENABLE_STRIKETHROUGH);
-    let parser = Parser::new_ext(text, options);
+    let parser = Parser::new(text);
     let mut renderer = MarkdownRenderer::new(theme);
     renderer.process(parser);
     renderer.finish()
@@ -48,7 +141,6 @@ fn needs_markdown(text: &str) -> bool {
         || scan.contains('>')
         || scan.contains('[')
         || scan.contains('~')
-        || scan.contains('|')
         || scan.contains("```")
         || scan.contains("1.")
         || scan.contains("- ")
@@ -85,18 +177,6 @@ struct MarkdownRenderer<'a> {
     list_index: u64,
     /// 是否在列表项中（用于判断是否追加项目前缀）
     in_list_item: bool,
-    /// 是否处于表格内部
-    in_table: bool,
-    /// 表格列对齐方式
-    table_alignments: Vec<Alignment>,
-    /// 表格所有行数据（rows × cols），不含分隔行
-    table_rows: Vec<Vec<String>>,
-    /// 当前表格行正在构建的单元格
-    table_current_row: Vec<String>,
-    /// 当前单元格文本缓冲区
-    table_cell_buf: String,
-    /// 是否有表头（表格渲染时用于区分表头行和数据行）
-    has_table_head: bool,
 }
 
 impl<'a> MarkdownRenderer<'a> {
@@ -117,12 +197,6 @@ impl<'a> MarkdownRenderer<'a> {
             list_depth: 0,
             list_index: 0,
             in_list_item: false,
-            in_table: false,
-            table_alignments: Vec::new(),
-            table_rows: Vec::new(),
-            table_current_row: Vec::new(),
-            table_cell_buf: String::new(),
-            has_table_head: false,
         }
     }
 
@@ -142,12 +216,6 @@ impl<'a> MarkdownRenderer<'a> {
                 Event::InlineHtml(html) => {
                     self.buf.push_str(&html);
                 }
-                Event::InlineMath(math) => {
-                    self.buf.push_str(&math);
-                }
-                Event::DisplayMath(math) => {
-                    self.buf.push_str(&math);
-                }
                 Event::SoftBreak => self.on_soft_break(),
                 Event::HardBreak => self.on_hard_break(),
                 Event::Rule => self.on_rule(),
@@ -165,7 +233,7 @@ impl<'a> MarkdownRenderer<'a> {
         }
     }
 
-    fn finish(self) -> Vec<Line<'static>> {
+    fn finish(mut self) -> Vec<Line<'static>> {
         self.lines
     }
 
@@ -235,23 +303,12 @@ impl<'a> MarkdownRenderer<'a> {
                 };
                 self.buf = prefix;
             }
-            Tag::Table(alignments) => {
-                self.in_table = true;
-                self.table_alignments = alignments;
-                self.table_rows.clear();
-                self.table_current_row.clear();
-                self.table_cell_buf.clear();
-                self.has_table_head = false;
+            Tag::Table(_) => {
+                // 表格在终端中渲染体验差，回退为纯文本
             }
-            Tag::TableHead => {
-                self.has_table_head = true;
-            }
-            Tag::TableRow => {
-                self.table_current_row.clear();
-            }
+            Tag::TableHead | Tag::TableRow => {}
             Tag::TableCell => {
-                // 单元格开始：采集后续文本到 table_cell_buf
-                self.table_cell_buf.clear();
+                self.buf.push_str(" | ");
             }
             Tag::Emphasis => {
                 self.flush_inline_text();
@@ -284,11 +341,7 @@ impl<'a> MarkdownRenderer<'a> {
                 self.buf.push(']');
             }
             Tag::MetadataBlock(_) => {}
-            Tag::HtmlBlock => {}
-            Tag::FootnoteDefinition(_) => {}
-            Tag::DefinitionList
-            | Tag::DefinitionListTitle
-            | Tag::DefinitionListDefinition => {}
+            Tag::DefinitionList | Tag::DefinitionListTitle | Tag::DefinitionListDefinition => {}
         }
     }
 
@@ -344,29 +397,16 @@ impl<'a> MarkdownRenderer<'a> {
                 }
                 self.in_list_item = false;
             }
-            TagEnd::TableCell => {
-                // 完成单元格，存入当前行
-                let text = std::mem::take(&mut self.table_cell_buf);
-                self.table_current_row.push(text);
+            TagEnd::Table(_) => {
+                self.lines.push(Line::from(""));
             }
-            TagEnd::TableRow => {
-                // 完成当前行，存入表格
-                let row = std::mem::take(&mut self.table_current_row);
-                self.table_rows.push(row);
-            }
-            TagEnd::TableHead => {
-                // 表头单元格是 TableHead 的直接子元素（无 TableRow 包装）
-                let row = std::mem::take(&mut self.table_current_row);
-                if !row.is_empty() {
-                    self.table_rows.push(row);
+            TagEnd::TableHead | TagEnd::TableRow => {
+                self.flush_inline();
+                if !self.current_spans.is_empty() {
+                    self.push_line();
                 }
             }
-            TagEnd::Table => {
-                self.emit_table();
-                self.in_table = false;
-                self.table_rows.clear();
-                self.table_alignments.clear();
-            }
+            TagEnd::TableCell => {}
             TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough => {
                 self.flush_inline_text();
                 self.style_stack.pop();
@@ -385,8 +425,6 @@ impl<'a> MarkdownRenderer<'a> {
             }
             TagEnd::Image => {}
             TagEnd::MetadataBlock(_) => {}
-            TagEnd::HtmlBlock => {}
-            TagEnd::FootnoteDefinition => {}
             TagEnd::DefinitionList
             | TagEnd::DefinitionListTitle
             | TagEnd::DefinitionListDefinition => {}
@@ -398,10 +436,6 @@ impl<'a> MarkdownRenderer<'a> {
     fn on_text(&mut self, text: &str) {
         if self.in_code_block {
             self.code_block_lines.push(text.to_string());
-            return;
-        }
-        if self.in_table {
-            self.table_cell_buf.push_str(text);
             return;
         }
         self.buf.push_str(text);
@@ -563,139 +597,6 @@ impl<'a> MarkdownRenderer<'a> {
             .push(Line::from(Span::styled(bottom, border_style)));
         self.lines.push(Line::from(""));
     }
-
-    /// 输出表格（两遍渲染：先计算列宽，再对齐输出）
-    ///
-    /// 表格渲染策略：
-    /// - 表头行用 bold 样式 + 分隔线
-    /// - 数据行用左/中/右对齐
-    /// - 列间用 "│" 分隔
-    fn emit_table(&mut self) {
-        if self.table_rows.is_empty() {
-            self.lines.push(Line::from(""));
-            return;
-        }
-
-        let header_style = Style::default()
-            .fg(self.theme.heading_color)
-            .add_modifier(Modifier::BOLD);
-        let cell_style = Style::default().fg(self.theme.text);
-        let border_style = Style::default()
-            .fg(self.theme.text_dim)
-            .add_modifier(Modifier::DIM);
-
-        let num_cols = self
-            .table_rows
-            .iter()
-            .map(|r| r.len())
-            .max()
-            .unwrap_or(0);
-        if num_cols == 0 {
-            return;
-        }
-
-        // 计算每列最大显示宽度（含中文字符宽度）
-        let mut col_widths: Vec<usize> = vec![0; num_cols];
-        for row in &self.table_rows {
-            for (ci, cell) in row.iter().enumerate() {
-                if ci >= num_cols {
-                    break;
-                }
-                let w = unicode_width::UnicodeWidthStr::width(cell.as_str());
-                col_widths[ci] = col_widths[ci].max(w);
-            }
-        }
-        // 每列最小 3 字符宽
-        for w in &mut col_widths {
-            *w = (*w).max(3);
-        }
-
-        // 构建对齐函数
-        let align = |text: &str, width: usize, ci: usize| -> String {
-            let w = unicode_width::UnicodeWidthStr::width(text);
-            let padding = width.saturating_sub(w);
-            let alignment = self.table_alignments.get(ci).copied();
-            match alignment {
-                Some(Alignment::Right) | Some(Alignment::Center) => {
-                    let left = if alignment == Some(Alignment::Center) {
-                        padding / 2
-                    } else {
-                        padding
-                    };
-                    let right = padding - left;
-                    format!(
-                        "{}{}{}",
-                        " ".repeat(left),
-                        text,
-                        " ".repeat(right)
-                    )
-                }
-                _ => {
-                    // Left 或 None：左对齐
-                    format!("{}{}", text, " ".repeat(padding))
-                }
-            }
-        };
-
-        // 渲染表格顶边框
-        let sep_line: String = col_widths
-            .iter()
-            .map(|w| "─".repeat(*w))
-            .collect::<Vec<_>>()
-            .join("─┼─");
-        self.lines.push(Line::from(Span::styled(
-            format!("┌─{}─┐", sep_line),
-            border_style,
-        )));
-
-        let header_count = if self.has_table_head || self.table_rows.len() == 1 {
-            // 有显式 thead 或只有一行（视为全表头）
-            1.min(self.table_rows.len())
-        } else {
-            // 无显式 thead：首行当表头
-            1
-        };
-
-        for (ri, row) in self.table_rows.iter().enumerate() {
-            let is_header = ri < header_count;
-            let style = if is_header { header_style } else { cell_style };
-
-            // 渲染数据行
-            let cells: Vec<String> = (0..num_cols)
-                .map(|ci| {
-                    let text = row.get(ci).map(|s| s.as_str()).unwrap_or("");
-                    align(text, col_widths[ci], ci)
-                })
-                .collect();
-            let row_text = format!("│ {} │", cells.join(" │ "));
-            self.lines.push(Line::from(Span::styled(row_text, style)));
-
-            // 表头后加分隔线
-            if is_header && ri == header_count - 1 && self.table_rows.len() > header_count {
-                let header_sep: String = col_widths
-                    .iter()
-                    .map(|w| "─".repeat(*w))
-                    .collect::<Vec<_>>()
-                    .join("─┼─");
-                self.lines.push(Line::from(Span::styled(
-                    format!("├─{}─┤", header_sep),
-                    border_style,
-                )));
-            }
-        }
-
-        // 渲染底边框
-        let bottom_line: String = col_widths
-            .iter()
-            .map(|w| "─".repeat(*w))
-            .collect::<Vec<_>>()
-            .join("─┴─");
-        self.lines.push(Line::from(Span::styled(
-            format!("└─{}─┘", bottom_line),
-            border_style,
-        )));
-        self.lines.push(Line::from(""));
-    }
 }
 
 #[cfg(test)]
@@ -799,61 +700,482 @@ mod tests {
             .any(|line| line.spans.iter().any(|s| s.content.contains("click here")));
         assert!(has_text, "Link should show link text");
     }
-
-    #[test]
-    fn test_simple_table() {
-        let theme = Theme::cyan();
-        let lines = render(
-            "| 名称 | 版本 |\n|------|------|\n| Rust | 1.85 |\n| Tokio | 1.0 |\n",
-            &theme,
-        );
-        // 应包含表头和数据
-        let has_name = lines
-            .iter()
-            .any(|line| line.spans.iter().any(|s| s.content.contains("名称")));
-        let has_rust = lines
-            .iter()
-            .any(|line| line.spans.iter().any(|s| s.content.contains("Rust")));
-        let has_tokio = lines
-            .iter()
-            .any(|line| line.spans.iter().any(|s| s.content.contains("Tokio")));
-        assert!(has_name, "Table header should contain column names");
-        assert!(has_rust, "Table should contain Rust row");
-        assert!(has_tokio, "Table should contain Tokio row");
-    }
-
-    #[test]
-    fn test_table_with_alignment() {
-        let theme = Theme::cyan();
-        // 右对齐的数字列
-        let lines = render(
-            "| 项目 | 数量 |\n|:-----|-----:|\n| A | 123 |\n",
-            &theme,
-        );
-        let has_project = lines
-            .iter()
-            .any(|line| line.spans.iter().any(|s| s.content.contains("项目")));
-        let has_a = lines
-            .iter()
-            .any(|line| line.spans.iter().any(|s| s.content.contains('A')));
-        assert!(has_project, "Table should render");
-        assert!(has_a, "Table should render data rows");
-    }
-
-    #[test]
-    fn test_table_preserves_all_rows() {
-        let theme = Theme::cyan();
-        let lines = render("| x | y |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n| 5 | 6 |\n", &theme);
-        let mut count_1 = 0;
-        for line in &lines {
-            for span in &line.spans {
-                if span.content.contains('1') || span.content.contains('3')
-                    || span.content.contains('5')
-                {
-                    count_1 += 1;
-                }
-            }
-        }
-        assert_eq!(count_1, 3, "All three data rows should be present");
-    }
 }
+```
+
+- [ ] **Step 3: 编译检查**
+
+```bash
+cargo check
+```
+Expected: 编译成功，零警告。
+
+- [ ] **Step 4: 运行测试**
+
+```bash
+cargo test --lib markdown
+```
+Expected: 全部 PASS（至少 9 个测试通过）。
+
+- [ ] **Step 5: Clippy 检查**
+
+```bash
+cargo clippy -- -D warnings
+```
+Expected: 零警告。
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/components/markdown.rs src/components/mod.rs
+git commit -m "feat(markdown): 添加 Markdown → Ratatui Line 渲染器"
+```
+
+---
+
+### Task 3: 扩展 Theme 增加 Markdown 专用颜色
+
+**Files:**
+- Modify: `src/theme.rs`
+
+**Interfaces:**
+- Consumes: 现有 `Theme` 结构体
+- Produces: 7 个新字段：`code_bg`, `code_border`, `blockquote_text`, `inline_code_bg`, `link_color`, `heading_color`。注意：`blockquote_bar` 在终端 TUI 中间接通过文本颜色呈现，不需要单独的 `blockquote_bar` bar 颜色，因为引用块没有物理左边框。
+
+- [ ] **Step 1: 新增字段到 Theme 结构体**
+
+编辑 `src/theme.rs`，在 `diff_green_bg` 字段之后新增：
+
+```rust
+    /// Markdown 代码块背景色
+    pub code_bg: Color,
+    /// Markdown 代码块边框色
+    pub code_border: Color,
+    /// Markdown 引用块文字色
+    pub blockquote_text: Color,
+    /// Markdown 内联代码背景色
+    pub inline_code_bg: Color,
+    /// Markdown 链接色
+    pub link_color: Color,
+    /// Markdown 标题色（H1-H6 共用，字号/加粗区分层级）
+    pub heading_color: Color,
+```
+
+- [ ] **Step 2: 更新 `cyan()` 初始化**
+
+编辑 `src/theme.rs`，在 `cyan()` 末尾的 `diff_green_bg` 后新增：
+
+```rust
+            code_bg: Color::Rgb(14, 20, 26),
+            code_border: Color::Rgb(76, 133, 135),
+            blockquote_text: Color::Rgb(132, 155, 156),
+            inline_code_bg: Color::Rgb(20, 28, 36),
+            link_color: Color::Rgb(151, 255, 245),
+            heading_color: Color::Rgb(255, 191, 92),
+```
+
+- [ ] **Step 3: 更新 Theme 测试断言**
+
+编辑 `src/theme.rs` 的 `cyan_theme_should_match_midnight_control_room_palette` 测试，在末尾新增断言：
+
+```rust
+        assert_eq!(theme.code_bg, Color::Rgb(14, 20, 26));
+        assert_eq!(theme.code_border, Color::Rgb(76, 133, 135));
+        assert_eq!(theme.blockquote_text, Color::Rgb(132, 155, 156));
+        assert_eq!(theme.inline_code_bg, Color::Rgb(20, 28, 36));
+        assert_eq!(theme.link_color, Color::Rgb(151, 255, 245));
+        assert_eq!(theme.heading_color, Color::Rgb(255, 191, 92));
+```
+
+- [ ] **Step 4: 编译 + 测试**
+
+```bash
+cargo test --lib theme
+cargo clippy -- -D warnings
+```
+Expected: 测试 PASS，零 clippy 警告。
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/theme.rs
+git commit -m "feat(theme): 新增 Markdown 专用颜色字段"
+```
+
+---
+
+### Task 4: 集成到 MainView 渲染路径
+
+**Files:**
+- Modify: `src/components/main_view.rs`
+
+**Interfaces:**
+- Consumes: `markdown::render(text: &str, theme: &Theme) -> Vec<Line<'static>>`
+- Produces: `render_message` 和 `render_full_output` 中的文本渲染改为调用 `markdown::render` 替代原始的 `parse_ansi_spans` 逐字符处理
+
+需要修改的位置（4 处文本渲染路径）：
+
+1. **`ChatRole::User` 消息**（`render_message` 中 ∼L116-124）：用户消息通常不含 Markdown，但安全起见统一走 `markdown::render`，`needs_markdown()` 快速路径会自动回退纯文本
+2. **`ChatRole::Assistant` 的 `ContentBlock::Text { text }`**（`render_message` 中 ∼L222-230）：这是核心渲染点，pi 回复内容含完整 Markdown
+3. **`ChatRole::Assistant` 的 `message.text` 回退路径**（`render_message` 中 ∼L138-146，当 `content` 为空时使用 `message.text`）
+4. **`ChatRole::System` / `ChatRole::Error`**（`render_message` 末尾）：与 User 同理
+
+另外 `render_full_output` 中渲染 content 文本行也应改用 `markdown::render`。
+
+- [ ] **Step 1: 在 main_view.rs 顶部添加 use 声明**
+
+在 `use super::Component;` 之后新增：
+
+```rust
+use super::markdown;
+```
+
+- [ ] **Step 2: 修改 `ContentBlock::Text` 渲染**（核心修改）
+
+编辑 `src/components/main_view.rs`，找到 `crate::message::ContentBlock::Text { text } =>` 分支（约 L222），将：
+
+```rust
+                        crate::message::ContentBlock::Text { text } => {
+                            for text_line in text.lines() {
+                                let prefix = Span::from(" ").style(Style::default().fg(theme.text));
+                                let mut spans = vec![prefix];
+                                spans.extend(crate::parse_ansi_spans(
+                                    text_line,
+                                    Style::default().fg(theme.text),
+                                ));
+                                lines.push(Line::from(spans));
+                            }
+                        }
+```
+
+替换为：
+
+```rust
+                        crate::message::ContentBlock::Text { text } => {
+                            // 先用 strip_ansi 去掉 ANSI 转义序列，再解析 Markdown
+                            let clean = crate::strip_ansi(text);
+                            let md_lines = markdown::render(&clean, theme);
+                            // 为每行添加前缀缩进空格
+                            for md_line in md_lines {
+                                let mut spans = vec![Span::from(" ")];
+                                spans.extend(md_line.spans.into_iter());
+                                lines.push(Line::from(spans));
+                            }
+                        }
+```
+
+- [ ] **Step 3: 修改 `ChatRole::User` 渲染**
+
+找到 `ChatRole::User =>` 分支中 `for text_line in message.text.lines()` 循环（约 L116-124），将：
+
+```rust
+                for text_line in message.text.lines() {
+                    let prefix = Span::from(" ").style(Style::default().fg(theme.text));
+                    let mut spans = vec![prefix];
+                    spans.extend(crate::parse_ansi_spans(
+                        text_line,
+                        Style::default().fg(theme.text),
+                    ));
+                    lines.push(Line::from(spans));
+                }
+```
+
+替换为：
+
+```rust
+                let clean = crate::strip_ansi(&message.text);
+                let md_lines = markdown::render(&clean, theme);
+                for md_line in md_lines {
+                    let mut spans = vec![Span::from(" ")];
+                    spans.extend(md_line.spans.into_iter());
+                    lines.push(Line::from(spans));
+                }
+```
+
+- [ ] **Step 4: 修改 `ChatRole::Assistant` 的 `message.text` 回退路径**
+
+找到 `if message.content.is_empty()` 分支内 `for text_line in message.text.lines()` 循环（约 L138-146），与 Step 3 同样的替换模式：
+
+```rust
+                let clean = crate::strip_ansi(&message.text);
+                let md_lines = markdown::render(&clean, theme);
+                for md_line in md_lines {
+                    let mut spans = vec![Span::from(" ")];
+                    spans.extend(md_line.spans.into_iter());
+                    lines.push(Line::from(spans));
+                }
+```
+
+替换原有的 `for text_line in message.text.lines()` 循环。
+
+- [ ] **Step 5: 修改 `ChatRole::System` 和 `ChatRole::Error` 渲染**
+
+找到 `ChatRole::System =>` 分支和 `ChatRole::Error =>` 分支（约 L258-280），将它们的 `for text_line in message.text.lines()` 循环也替换为与 Step 3 相同的 markdown 渲染模式。
+
+- [ ] **Step 6: 修改 `render_full_output` 中的文本渲染**
+
+找到 `render_full_output` 方法中的 `for text_line in content.lines()` 循环（约 L374-377），替换为：
+
+```rust
+        let md_lines = markdown::render(content, theme);
+        for md_line in md_lines {
+            let mut spans = vec![Span::from(" ")];
+            spans.extend(md_line.spans.into_iter());
+            lines.push(Line::from(spans));
+        }
+```
+
+- [ ] **Step 7: 编译检查**
+
+```bash
+cargo check
+```
+Expected: 编译成功，零警告。
+
+- [ ] **Step 8: 运行全部测试**
+
+```bash
+cargo test
+```
+Expected: 全部测试 PASS。
+
+- [ ] **Step 9: Clippy 检查**
+
+```bash
+cargo clippy -- -D warnings
+```
+Expected: 零警告。
+
+- [ ] **Step 10: 清理未使用的 `parse_ansi_spans` 导入**
+
+检查 `src/components/main_view.rs` 顶部 use 声明中是否还在使用 `crate::parse_ansi_spans`。若不再直接调用，移除该 use（但保留 `crate::strip_ansi` 的 use）。
+
+如果是全局 use，检查其他文件是否还在使用 `parse_ansi_spans`：
+
+```bash
+cargo check 2>&1 | grep -i unused
+```
+
+若有 `unused import: crate::parse_ansi_spans`，移除该 use。
+
+(T1⚠：main_view.rs 不直接 `use crate::parse_ansi_spans`，它通过 `crate::parse_ansi_spans(...)` 路径调用，所以不会触发 unused import 警告。)
+
+- [ ] **Step 11: Commit**
+
+```bash
+git add src/components/main_view.rs
+git commit -m "feat(markdown): 集成 Markdown 渲染到 MainView 文本路径"
+```
+
+---
+
+### Task 5: 集成测试与端到端验证
+
+**Files:**
+- Modify: `tests/integration_test.rs`（如果存在）
+- 或新增测试在 `src/components/main_view.rs` 的 `#[cfg(test)]` 块中
+
+**Interfaces:**
+- Consumes: `markdown::render`, `Theme`, `ChatMessage`, `MainView`
+- Produces: 测试用例验证 Markdown 文本正确渲染为带样式的 Line
+
+- [ ] **Step 1: 在 main_view tests 中新增 Markdown 渲染集成测试**
+
+编辑 `src/components/main_view.rs` 的 `#[cfg(test)] mod tests` 块，在末尾（`}` 之前）新增：
+
+```rust
+    #[test]
+    fn test_render_markdown_bold_in_text_block() {
+        let mut mv = MainView::default();
+        let mut msg = ChatMessage::assistant("test", "");
+        msg.content = vec![crate::message::ContentBlock::Text {
+            text: "这是 **粗体** 文字".to_string(),
+        }];
+        mv.messages.push(msg);
+
+        let theme = Theme::cyan();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                mv.render(f, area, &theme);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        // 确认 "粗体" 文字出现在输出中
+        let has_bold_text = buffer
+            .content()
+            .iter()
+            .any(|c| c.symbol() == "粗");
+        assert!(has_bold_text, "Bold text should be rendered in output");
+    }
+
+    #[test]
+    fn test_render_markdown_code_block() {
+        let mut mv = MainView::default();
+        let mut msg = ChatMessage::assistant("test", "");
+        msg.content = vec![crate::message::ContentBlock::Text {
+            text: "```\nlet x = 1;\n```".to_string(),
+        }];
+        mv.messages.push(msg);
+
+        let theme = Theme::cyan();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                mv.render(f, area, &theme);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        // 确认代码内容出现
+        let has_code = buffer
+            .content()
+            .iter()
+            .any(|c| c.symbol().contains("let"));
+        assert!(has_code, "Code block content should be rendered");
+    }
+
+    #[test]
+    fn test_render_markdown_heading() {
+        let mut mv = MainView::default();
+        let mut msg = ChatMessage::assistant("test", "");
+        msg.content = vec![crate::message::ContentBlock::Text {
+            text: "## 安装步骤".to_string(),
+        }];
+        mv.messages.push(msg);
+
+        let theme = Theme::cyan();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                mv.render(f, area, &theme);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let has_heading = buffer
+            .content()
+            .iter()
+            .any(|c| c.symbol().contains("安装") || c.symbol().contains("步骤"));
+        assert!(has_heading, "Heading text should be rendered");
+    }
+
+    #[test]
+    fn test_render_markdown_list() {
+        let mut mv = MainView::default();
+        let mut msg = ChatMessage::assistant("test", "");
+        msg.content = vec![crate::message::ContentBlock::Text {
+            text: "- 第一项\n- 第二项".to_string(),
+        }];
+        mv.messages.push(msg);
+
+        let theme = Theme::cyan();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                mv.render(f, area, &theme);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let has_item = buffer
+            .content()
+            .iter()
+            .any(|c| c.symbol().contains("第一"));
+        assert!(has_item, "List items should be rendered");
+    }
+
+    #[test]
+    fn test_render_plain_text_still_works() {
+        // 回归测试：确保无 Markdown 的纯文本仍然正常渲染
+        let mut mv = MainView::default();
+        let mut msg = ChatMessage::assistant("test", "");
+        msg.content = vec![crate::message::ContentBlock::Text {
+            text: "普通文本 没有特殊格式".to_string(),
+        }];
+        mv.messages.push(msg);
+
+        let theme = Theme::cyan();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                mv.render(f, area, &theme);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let has_text = buffer
+            .content()
+            .iter()
+            .any(|c| c.symbol().contains("普通"));
+        assert!(has_text, "Plain text should be rendered");
+    }
+```
+
+- [ ] **Step 2: 运行新增测试**
+
+```bash
+cargo test test_render_markdown
+cargo test test_render_plain_text_still_works
+```
+Expected: 全部 PASS。
+
+- [ ] **Step 3: 运行全量测试 + Clippy**
+
+```bash
+cargo test
+cargo clippy -- -D warnings
+```
+Expected: 全部测试 PASS，零 clippy 警告。
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add src/components/main_view.rs
+git commit -m "test(markdown): 新增 Markdown 渲染集成测试"
+```
+
+---
+
+## 自审清单
+
+### 1. 需求覆盖
+
+| 需求 | 覆盖任务 |
+|---|---|
+| Markdown 粗体 / 斜体 / 删除线 | Task 2 (StyleStack + Modifier) |
+| 标题 H1-H6 | Task 2 (Heading + heading_color + BOLD) |
+| 内联代码 | Task 2 (on_inline_code + inline_code_bg) |
+| 围栏代码块 | Task 2 (CodeBlock + emit_code_block + 行号) |
+| 引用块 | Task 2 (BlockQuote + blockquote_text + ITALIC) |
+| 有序/无序列表 | Task 2 (List/Item + 自动编号/项目符号) |
+| 链接 | Task 2 (Link + link_color) |
+| 水平分割线 | Task 2 (Rule + 分隔符) |
+| 纯文本回退 | Task 2 (needs_markdown 快速路径) |
+| 主题颜色融合 | Task 3 (Theme 新增字段) |
+| 集成到主渲染路径 | Task 4 (4 个渲染路径 + render_full_output) |
+| 集成测试 | Task 5 (5 个新测试 + 回归测试) |
+
+### 2. 占位符检查
+
+无 TBD / TODO / "implement later"。所有代码块均为完整可运行代码。
+
+### 3. 类型一致性
+
+- `markdown::render()` 签名：`(&str, &Theme) -> Vec<Line<'static>>` — 在 Task 2 定义，Task 4 和 Task 5 中调用
+- `Theme` 新增字段在 Task 3 定义，Task 2 的 `MarkdownRenderer` 中使用，名称一致
+- `needs_markdown` 内部函数仅在 `markdown.rs` 内使用
+- `strip_ansi` 在 Task 4 中调用，来自 `lib.rs`，已存在无需修改
+
+---
