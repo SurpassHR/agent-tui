@@ -700,6 +700,11 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                                         app.tui.scroll_mode =
                                             crate::app::ScrollMode::Pinned;
                                     }
+                                } else {
+                                    // 已在第一个块或列表为空 → 切换到 Input 子区
+                                    app.handle_action(Action::CycleFocusSubsection(-1))
+                                        .await
+                                        .ok();
                                 }
                             } else {
                                 app.handle_action(Action::CycleFocusSubsection(-1))
@@ -728,6 +733,11 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                                         app.tui.scroll_mode =
                                             crate::app::ScrollMode::Pinned;
                                     }
+                                } else {
+                                    // 无更多块或列表为空 → 切换到 Input 子区
+                                    app.handle_action(Action::CycleFocusSubsection(1))
+                                        .await
+                                        .ok();
                                 }
                             } else {
                                 app.handle_action(Action::CycleFocusSubsection(1))
