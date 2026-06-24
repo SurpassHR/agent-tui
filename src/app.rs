@@ -113,6 +113,7 @@ pub enum SidebarSubsection {
     #[default]
     Workspace,
     Provider,
+    Model,
 }
 
 /// 主视图子区
@@ -192,7 +193,6 @@ pub struct TuiState {
     pub provider_popup: Option<usize>,
     /// 模型列表中光标位置
     pub model_cursor: usize,
-    pub selecting_model: bool,
     pub provider_editor: Option<ProviderEditor>,
     pub models_fetch_rx: Option<tokio::sync::oneshot::Receiver<Option<String>>>,
     /// skill 列表（从 skills/*/SKILL.md 解析）
@@ -386,7 +386,6 @@ impl TuiState {
             current_model: String::new(),
             provider_cursor: 0,
             model_cursor: 0,
-            selecting_model: false,
             provider_popup: None,
             provider_editor: None,
             models_fetch_rx: None,
@@ -453,53 +452,19 @@ impl TuiState {
         } else {
             match key {
                 KeyCode::Up => {
-                    if self.selecting_model {
-                        if self.model_cursor > 0 {
-                            self.model_cursor -= 1;
-                        }
-                    } else if self.provider_cursor > 0 {
+                    if self.provider_cursor > 0 {
                         self.provider_cursor -= 1;
                     }
                     true
                 }
                 KeyCode::Down => {
-                    if self.selecting_model {
-                        let total = self
-                            .providers
-                            .get(self.provider_cursor)
-                            .map(|p| p.models.len())
-                            .unwrap_or(0);
-                        if self.model_cursor + 1 < total {
-                            self.model_cursor += 1;
-                        }
-                    } else if self.provider_cursor < self.providers.len() {
+                    if self.provider_cursor < self.providers.len() {
                         self.provider_cursor += 1;
                     }
                     true
                 }
-                KeyCode::Right => {
-                    if !self.selecting_model
-                        && self
-                            .providers
-                            .get(self.provider_cursor)
-                            .map(|p| !p.models.is_empty())
-                            .unwrap_or(false)
-                    {
-                        self.selecting_model = true;
-                        self.model_cursor = 0;
-                    }
-                    true
-                }
                 KeyCode::Enter => {
-                    if self.selecting_model {
-                        if let Some(p) = self.providers.get(self.provider_cursor) {
-                            if let Some(m) = p.models.get(self.model_cursor) {
-                                self.current_model = m.id.clone();
-                            }
-                        }
-                        self.selecting_model = false;
-                        self.open_edit_provider_editor(self.provider_cursor);
-                    } else if self.provider_cursor == self.providers.len()
+                    if self.provider_cursor == self.providers.len()
                         || self.providers.is_empty()
                     {
                         self.provider_popup = None;
@@ -524,15 +489,9 @@ impl TuiState {
                     }
                     true
                 }
-                KeyCode::Left | KeyCode::Esc => {
-                    if self.selecting_model {
-                        self.selecting_model = false;
-                    }
-                    true
-                }
+                KeyCode::Left | KeyCode::Esc => true,
                 KeyCode::Char('+') => {
-                    if !self.selecting_model {
-                        let default = crate::provider::ProviderInfo {
+                    let default = crate::provider::ProviderInfo {
                             id: "new-provider".into(),
                             name: "New Provider".into(),
                             bridge: false,
@@ -555,11 +514,55 @@ impl TuiState {
                             providers: self.providers.clone(),
                         };
                         crate::provider::ProviderConfig::save(&path, &cfg);
-                    }
                     true
                 }
                 _ => false,
             }
+        }
+    }
+
+    /// 处理 MODEL 子区键盘事件
+    pub fn handle_model_key(&mut self, key: crossterm::event::KeyCode) -> bool {
+        if self.provider_editor.is_some() {
+            return false;
+        }
+        match key {
+            KeyCode::Up => {
+                if self.model_cursor > 0 {
+                    self.model_cursor -= 1;
+                }
+                true
+            }
+            KeyCode::Down => {
+                let active_provider = self.active_provider_for_models();
+                if let Some(ap) = active_provider {
+                    if self.model_cursor + 1 < ap.models.len() {
+                        self.model_cursor += 1;
+                    }
+                }
+                true
+            }
+            KeyCode::Enter => {
+                let active_provider = self.active_provider_for_models();
+                if let Some(ap) = active_provider {
+                    if let Some(m) = ap.models.get(self.model_cursor) {
+                        self.current_model = m.id.clone();
+                    }
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// 获取当前活跃 provider（用于 MODEL 子区显示模型列表）
+    fn active_provider_for_models(&self) -> Option<&crate::provider::ProviderInfo> {
+        if self.current_model.is_empty() {
+            self.providers.first()
+        } else {
+            self.providers
+                .iter()
+                .find(|p| p.models.iter().any(|m| m.id == self.current_model))
         }
     }
 
@@ -1129,10 +1132,11 @@ impl App {
                         SidebarSubsection::ActiveSession,
                         SidebarSubsection::Workspace,
                         SidebarSubsection::Provider,
+                        SidebarSubsection::Model,
                     ];
                     let current = self.tui.sidebar_subsection;
                     let idx = subs.iter().position(|s| *s == current).unwrap_or(1);
-                    let next = ((idx as i32 + dir).rem_euclid(3)) as usize;
+                    let next = ((idx as i32 + dir).rem_euclid(4)) as usize;
                     self.tui.sidebar_subsection = subs[next];
                 }
                 FocusPanel::MainView => {
@@ -1328,7 +1332,6 @@ impl App {
         }
         self.tui.sidebar.provider_cursor = self.tui.provider_cursor;
         self.tui.sidebar.model_cursor = self.tui.model_cursor;
-        self.tui.sidebar.selecting_model = self.tui.selecting_model;
         self.tui.sidebar.message_count = self
             .active_agent
             .as_ref()
@@ -2459,7 +2462,6 @@ mod tests {
         }];
         state.focus_panel = FocusPanel::Sidebar;
         state.sidebar_subsection = SidebarSubsection::Provider;
-        state.selecting_model = false;
         state.provider_popup = None;
         state.provider_cursor = 0;
 
@@ -2479,7 +2481,6 @@ mod tests {
         let mut state = TuiState::new();
         state.focus_panel = FocusPanel::Sidebar;
         state.sidebar_subsection = SidebarSubsection::Provider;
-        state.selecting_model = false;
         state.provider_popup = None;
         state.provider_cursor = 0;
 
@@ -2610,9 +2611,9 @@ mod tests {
     }
 
     #[test]
-    fn test_provider_enter_selects_then_opens_model_popup() {
+    fn test_model_nav_down_up_enter() {
         let mut state = TuiState::new();
-        state.current_model = "old".into();
+        state.current_model = String::new(); // 空 = 使用第一个 provider
         state.providers = vec![crate::provider::ProviderInfo {
             id: "ds".into(),
             name: "DS".into(),
@@ -2639,28 +2640,15 @@ mod tests {
             ],
         }];
         state.focus_panel = FocusPanel::Sidebar;
-        state.sidebar_subsection = SidebarSubsection::Provider;
-        state.selecting_model = false;
-        state.provider_cursor = 0;
-
-        // → 展开 model list
-        state.handle_provider_key(crossterm::event::KeyCode::Right);
-        assert!(state.selecting_model, "Right 应展开 model list");
-        assert_eq!(state.model_cursor, 0, "展开后光标应在第一个 model");
+        state.sidebar_subsection = SidebarSubsection::Model;
+        state.model_cursor = 0;
 
         // Down 选择第二个 model
-        state.handle_provider_key(crossterm::event::KeyCode::Down);
+        state.handle_model_key(crossterm::event::KeyCode::Down);
         assert_eq!(state.model_cursor, 1, "Down 应移动到第二个 model");
 
-        // Enter 选中 model + 打开编辑表单
-        state.handle_provider_key(crossterm::event::KeyCode::Enter);
+        // Enter 选中 model
+        state.handle_model_key(crossterm::event::KeyCode::Enter);
         assert_eq!(state.current_model, "m2", "Enter 应切换到选中的 model");
-        assert!(!state.selecting_model, "Enter 后应退出模型选择模式");
-        let editor = state
-            .provider_editor
-            .as_ref()
-            .expect("Enter 应打开 Provider 编辑表单");
-        assert!(!editor.is_new, "编辑已有 provider 时 is_new 应为 false");
-        assert_eq!(state.provider_popup, None, "不应再打开 popup");
     }
 }

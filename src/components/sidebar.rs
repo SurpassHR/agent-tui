@@ -46,7 +46,6 @@ pub struct Sidebar {
     pub current_model: String,
     pub provider_cursor: usize,
     pub model_cursor: usize,
-    pub selecting_model: bool,
     /// Provider Router 实际绑定的端口
     pub port: u16,
 }
@@ -215,7 +214,8 @@ impl Sidebar {
     fn render_footer(&self, width: u16, theme: &Theme) -> Vec<Line<'static>> {
         let sep = "─".repeat(width.saturating_sub(1).max(1) as usize);
         let mut lines: Vec<Line<'static>> = Vec::new();
-        let focused = self.has_focus && self.subsection == SidebarSubsection::Provider;
+        let focused_on_providers = self.has_focus && self.subsection == SidebarSubsection::Provider;
+        let focused_on_models = self.has_focus && self.subsection == SidebarSubsection::Model;
 
         // ── 全宽分隔线 ──
         lines.push(Line::from(vec![
@@ -230,7 +230,7 @@ impl Sidebar {
         } else {
             " ◇ offline".to_string()
         };
-        let is_on_providers = focused && !self.selecting_model;
+        let is_on_providers = focused_on_providers;
         let p_title = if is_on_providers {
             Line::from(vec![
                 "▎".to_string().fg(theme.accent),
@@ -325,16 +325,23 @@ impl Sidebar {
                 Span::from(sep.clone()).fg(theme.border_dim)
             ]));
 
-            let is_on_models = focused && self.selecting_model;
+            let is_on_models = focused_on_models;
             let m_title = if is_on_models {
                 Line::from(vec![
                     "▎".to_string().fg(theme.accent),
                     format!("MODEL  {}", ap.id).fg(theme.accent).bold(),
                     Span::from(format!("  {} models", ap.models.len())).fg(theme.text_dim),
                 ])
+            } else if focused_on_providers {
+                // Provider 子区聚焦时：不带 ▎ 指示条，用 heading 色表明可达
+                Line::from(vec![
+                    Span::from(" MODEL  ").fg(theme.heading),
+                    Span::from(ap.id.clone()).fg(theme.heading).bold(),
+                    Span::from(format!("  {} models", ap.models.len())).fg(theme.text_dim),
+                ])
             } else {
                 Line::from(vec![
-                    Span::from(" MODEL  "),
+                    Span::from(" MODEL  ").fg(theme.heading),
                     Span::from(ap.id.clone()).fg(theme.accent).bold(),
                     Span::from(format!("  {} models", ap.models.len())).fg(theme.text_dim),
                 ])

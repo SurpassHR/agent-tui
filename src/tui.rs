@@ -624,6 +624,14 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                             }
                         }
 
+                        // Sidebar + Model: 委托给 TuiState 处理
+                        _ if *focus == crate::app::FocusPanel::Sidebar
+                            && app.tui.sidebar_subsection
+                                == crate::app::SidebarSubsection::Model =>
+                        {
+                            app.tui.handle_model_key(key.code);
+                        }
+
                         _ if *focus == crate::app::FocusPanel::MainView
                             && app.tui.main_view_subsection
                                 == crate::app::MainViewSubsection::Messages =>
