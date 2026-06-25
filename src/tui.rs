@@ -2374,3 +2374,38 @@ async fn check_ctrl_c() -> bool {
     .await
     .unwrap_or(false)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::cycle_thinking_level;
+
+    #[test]
+    fn test_cycle_thinking_level_default() {
+        // 无 thinking_level_map 时，不包含 xhigh
+        assert_eq!(cycle_thinking_level("off", None), "minimal");
+        assert_eq!(cycle_thinking_level("high", None), "off");
+    }
+
+    #[test]
+    fn test_cycle_thinking_level_with_map() {
+        let mut map = HashMap::new();
+        map.insert("off".to_string(), None);
+        map.insert("xhigh".to_string(), Some("max".to_string()));
+
+        assert_eq!(cycle_thinking_level("low", Some(&map)), "medium");
+        assert_eq!(cycle_thinking_level("high", Some(&map)), "xhigh");
+        assert_eq!(cycle_thinking_level("xhigh", Some(&map)), "minimal");
+    }
+
+    #[test]
+    fn test_cycle_thinking_level_xhigh_not_in_default() {
+        // 默认不支持 xhigh
+        assert_eq!(cycle_thinking_level("high", None), "off");
+        // 有 map 且 xhigh 有值时支持
+        let mut map = HashMap::new();
+        map.insert("xhigh".to_string(), Some("max".to_string()));
+        assert_eq!(cycle_thinking_level("high", Some(&map)), "xhigh");
+    }
+}
