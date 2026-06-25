@@ -1227,19 +1227,18 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                                 // ── CRUD 快捷键 a/d/r ──
                                 crossterm::event::KeyCode::Char('a') => {
                                     let cursor = app.tui.sidebar_cursor;
-                                    if let Some((is_ws, ws_idx, _sess_idx)) =
+                                    if cursor == 0 {
+                                        // WORKSPACE title → 添加工作区
+                                        app.tui.bottom_bar.status =
+                                            "添加工作区: 输入项目路径后按 Enter".into();
+                                        app.tui.workspace_rename = Some(
+                                            crate::app::RenameState::CreateWorkspace,
+                                        );
+                                    } else if let Some((is_ws, ws_idx, _sess_idx)) =
                                         app.tui.sidebar_item_at(cursor)
                                     {
                                         if is_ws {
-                                            // 添加工作区（输入项目路径）
-                                            app.tui.bottom_bar.status =
-                                                "添加工作区: 输入项目路径后按 Enter".into();
-                                            // 使用输入框收集名称（临时方案：弹出 modal）
-                                            app.tui.workspace_rename = Some(
-                                                crate::app::RenameState::CreateWorkspace,
-                                            );
-                                        } else {
-                                            // 创建会话
+                                            // 工作区节点 → 在当前工作区下创建会话
                                             app.tui.bottom_bar.status =
                                                 "新建会话: 输入名称后按 Enter".into();
                                             app.tui.workspace_rename =
@@ -1247,6 +1246,7 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                                                     ws_idx,
                                                 });
                                         }
+                                        // session 节点 → 不触发
                                     }
                                 }
                                 crossterm::event::KeyCode::Char('d') => {
