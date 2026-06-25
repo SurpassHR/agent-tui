@@ -58,6 +58,8 @@ pub struct Sidebar {
     pub port: u16,
     /// 当前选中的 Provider 索引（Space 切换控制）
     pub active_provider_idx: Option<usize>,
+    /// 当前思考级别（从 AgentRuntimeState 同步）
+    pub thinking_level: String,
     /// 最近一次渲染的子区布局 [活跃会话区, 工作区树, 分割线, PROVIDER+MODEL]
     pub layout_sections: [Rect; 4],
 }
@@ -83,6 +85,7 @@ impl Default for Sidebar {
             model_scroll: 0,
             port: 0,
             active_provider_idx: None,
+            thinking_level: "high".into(),
             layout_sections: [Rect::new(0, 0, 0, 0); 4],
         }
     }
@@ -382,6 +385,30 @@ impl Sidebar {
                     .style(ratatui::style::Style::default().fg(fg).bg(bg)),
             );
         }
+
+        // ── THINKING LEVEL ──
+        lines.push(Line::from(vec![
+            Span::from(sep.clone()).fg(theme.border_dim),
+        ]));
+        lines.push(Line::from(vec![
+            Span::from(" THINKING").fg(theme.heading).bold(),
+        ]));
+        let thinking_icon = match self.thinking_level.as_str() {
+            "off" => "○",
+            "minimal" | "low" => "◦",
+            "medium" => "●",
+            "high" => "◉",
+            "xhigh" => "★",
+            _ => "?",
+        };
+        lines.push(
+            Line::from(Span::from(format!(
+                "  {}  {}",
+                thinking_icon,
+                self.thinking_level.to_uppercase(),
+            )))
+            .style(Style::default().fg(theme.text_dim)),
+        );
 
         // ── MODEL 区块（独立跟随 active provider，支持搜索过滤 + 滚动） ──
         // 优先用 active_provider_idx 按索引定位，避免同名模型 ID 跨 Provider 误匹配

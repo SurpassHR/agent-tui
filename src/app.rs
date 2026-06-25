@@ -2327,6 +2327,10 @@ impl App {
             .sidebar
             .current_model
             .clone_from(&self.tui.current_model);
+        // 同步思考级别到侧边栏
+        self.tui.sidebar.thinking_level = self.runtime.thinking_level
+            .clone()
+            .unwrap_or_else(|| "high".into());
         self.tui.sidebar.port = self.tui.router_port;
         self.tui.sidebar.active_provider_idx = self.tui.active_provider_idx;
         // Clamp provider_cursor to valid range（0=title, 1..=N=providers, N+1=add）
