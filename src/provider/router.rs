@@ -106,11 +106,10 @@ async fn handle_chat_completions(
         )
         .await
     } else {
-        // 标准模式：读 model 字段路由
+        // 标准模式：根据 provider endpoint_type 路由
         standard_chat_proxy(
             &state.http,
             &provider,
-            "/v1/chat/completions",
             headers,
             body,
             &config,
@@ -138,7 +137,6 @@ async fn handle_responses(
         standard_chat_proxy(
             &state.http,
             &provider,
-            "/v1/responses",
             headers,
             body,
             &config,
@@ -166,7 +164,6 @@ async fn handle_messages(
         standard_chat_proxy(
             &state.http,
             &provider,
-            "/v1/messages",
             headers,
             body,
             &config,
@@ -196,7 +193,6 @@ async fn handle_gemini(
         standard_chat_proxy(
             &state.http,
             &provider,
-            &path,
             headers,
             body,
             &config,
@@ -267,11 +263,10 @@ async fn bridge_proxy(
     response
 }
 
-/// 标准模式代理：读 model 字段 → 匹配 provider → 转发 + 注入 API key
+/// 标准模式代理：读 model 字段 → 匹配 provider → 根据 endpoint_type 构造目标路径 → 转发 + 注入 API key
 async fn standard_chat_proxy(
     client: &Client,
     _provider: &super::ProviderInfo,
-    path: &str,
     _headers: HeaderMap,
     body: Body,
     config: &ProviderConfig,
@@ -317,6 +312,14 @@ async fn standard_chat_proxy(
         }
     };
 
+    // 根据 provider 的 endpoint_type 构造目标路径
+    let path = match target.endpoint_type.as_str() {
+        "openai_responses" => "/v1/responses".to_string(),
+        "anthropic_messages" => "/v1/messages".to_string(),
+        "gemini" => format!("/v1/models/{}:generateContent", model),
+        _ => "/v1/chat/completions".to_string(),
+    };
+
     let target_url = format!(
         "{}{}",
         target.base_url.trim_end_matches('/'),
@@ -324,11 +327,12 @@ async fn standard_chat_proxy(
     );
 
     tracing::info!(
-        "POST {} — model={} → provider={} → {}",
+        "POST {} — model={} → provider={} → {} (endpoint={})",
         path,
         model,
         target.id,
         target_url,
+        target.endpoint_type,
     );
 
     // 构造转发请求
