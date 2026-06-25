@@ -1678,11 +1678,23 @@ impl App {
                     if let Some(ws_dir) = actual_dir {
                         let session_id = uuid_v4_simple();
                         let session_path = ws_dir.join(format!("{}.jsonl", session_id));
-                        // 创建空的 jsonl 文件
-                        if let Err(e) = std::fs::write(&session_path, "") {
+                        // 写入会话元数据（包含名称，供 extract_session_name 识别，
+                        // load_session_messages 会跳过非 "message" 类型的行）
+                        let init_content =
+                            format!(r#"{{"type":"session_name","name":"{}"}}"#, name);
+                        if let Err(e) = std::fs::write(&session_path, init_content + "\n") {
                             tracing::error!("创建会话文件失败: {} — {}", session_path.display(), e);
                             self.tui.bottom_bar.status = format!("创建失败: {}", e);
                         } else {
+                            // 切换为新会话
+                            self.active_agent = Some(session_id.clone());
+                            self.session = SessionInfo {
+                                id: session_id.clone(),
+                                file_path: Some(session_path.to_string_lossy().to_string()),
+                                name: Some(name.clone()),
+                            };
+                            self.messages.insert(session_id.clone(), Vec::new());
+                            self.sync_messages_to_main_view(&session_id);
                             self.populate_workspaces();
                             self.sync_components();
                             self.tui.bottom_bar.status = format!("已创建会话: {}", name);
@@ -3249,8 +3261,11 @@ fn compute_display_names(workspaces: &mut [WorkspaceNode]) {
 
 /// 格式化会话名称：UUID 过长时截断显示
 ///
-/// `019ef344-f862-708a-8e4d-f9a16cc8325b` → `019ef344…`
-/// 从 JSONL session 文件中提取第一条用户消息作为会话名称
+/// 从 JSONL session 文件中提取会话名称
+///
+/// 优先级：
+/// 1. `type: "session_name"` 行 → 直接读取 name 字段
+/// 2. 第一条 role: "user" 的消息 → 读取 content[0].text
 ///
 /// 返回截断到 35 字符的纯文本，失败时返回 None。
 fn extract_session_name(path: &std::path::Path) -> Option<String> {
@@ -3261,29 +3276,42 @@ fn extract_session_name(path: &std::path::Path) -> Option<String> {
             continue;
         }
         let val: serde_json::Value = serde_json::from_str(line).ok()?;
-        if val.get("type").and_then(|v| v.as_str()) != Some("message") {
-            continue;
+        let ty = val.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        match ty {
+            "session_name" => {
+                return val.get("name").and_then(|v| v.as_str()).map(|s| {
+                    let trimmed = s.trim();
+                    if trimmed.chars().count() > 35 {
+                        let end: usize = trimmed.chars().take(35).map(|c| c.len_utf8()).sum();
+                        format!("{}…", &trimmed[..end])
+                    } else {
+                        trimmed.to_string()
+                    }
+                });
+            }
+            "message" => {
+                let msg = val.get("message")?;
+                if msg.get("role").and_then(|v| v.as_str()) != Some("user") {
+                    continue;
+                }
+                let text = msg
+                    .get("content")?
+                    .as_array()?
+                    .first()?
+                    .get("text")?
+                    .as_str()?;
+                let trimmed = text.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                if trimmed.chars().count() > 35 {
+                    let end: usize = trimmed.chars().take(35).map(|c| c.len_utf8()).sum();
+                    return Some(format!("{}…", &trimmed[..end]));
+                }
+                return Some(trimmed.to_string());
+            }
+            _ => continue,
         }
-        let msg = val.get("message")?;
-        if msg.get("role").and_then(|v| v.as_str()) != Some("user") {
-            continue;
-        }
-        let text = msg
-            .get("content")?
-            .as_array()?
-            .first()?
-            .get("text")?
-            .as_str()?;
-        let trimmed = text.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        // 截断到 35 字符（按字符数，非字节），过长时加 …
-        if trimmed.chars().count() > 35 {
-            let end: usize = trimmed.chars().take(35).map(|c| c.len_utf8()).sum();
-            return Some(format!("{}…", &trimmed[..end]));
-        }
-        return Some(trimmed.to_string());
     }
     None
 }
@@ -3540,7 +3568,9 @@ fn compute_diff_lines(old_text: &str, new_text: &str) -> Vec<crate::message::Dif
 /// pi 编码规则：`/` → `-`，前后加 `--`。
 /// 例如 `/home/hr/Projects/agent-tui` → `--home-hr-Projects-agent-tui--`
 fn encode_workspace_name(path: &str) -> String {
-    format!("--{}--", path.replace('/', "-"))
+    // 与 pi 行为一致：剥离开头的 / 后再编码
+    let trimmed = path.trim_start_matches('/');
+    format!("--{}--", trimmed.replace('/', "-"))
 }
 
 /// 将 cwd 与 sessions 目录名匹配
