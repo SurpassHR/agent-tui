@@ -84,6 +84,21 @@ fn default_endpoint_type() -> String {
     "openai_compat".to_string()
 }
 
+impl Default for ProviderInfo {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            name: String::new(),
+            enabled: true,
+            bridge: false,
+            base_url: String::new(),
+            api_key: String::new(),
+            models: Vec::new(),
+            endpoint_type: "openai_compat".into(),
+        }
+    }
+}
+
 impl ProviderInfo {
     /// endpoint_type → pi KnownApi 值
     pub fn pi_api(&self) -> &str {

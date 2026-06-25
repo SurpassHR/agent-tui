@@ -3856,6 +3856,7 @@ mod tests {
         // 期望：在 Provider section 按下 Enter 时 provider_popup 变为 Some(0)
         let mut state = TuiState::new();
         state.providers = vec![crate::provider::ProviderInfo {
+            endpoint_type: "openai_compat".into(),
             id: "deepseek".into(),
             name: "DeepSeek".into(),
             enabled: true,
@@ -3910,6 +3911,7 @@ mod tests {
     fn test_provider_popup_esc_closes() {
         let mut state = TuiState::new();
         state.providers = vec![crate::provider::ProviderInfo {
+            endpoint_type: "openai_compat".into(),
             id: "deepseek".into(),
             name: "DeepSeek".into(),
             enabled: true,
@@ -3932,6 +3934,7 @@ mod tests {
         let mut state = TuiState::new();
         state.current_model = "old-model".into();
         state.providers = vec![crate::provider::ProviderInfo {
+            endpoint_type: "openai_compat".into(),
             id: "deepseek".into(),
             name: "DeepSeek".into(),
             enabled: true,
@@ -3970,6 +3973,7 @@ mod tests {
         let mut state = TuiState::new();
         state.providers = vec![
             crate::provider::ProviderInfo {
+            endpoint_type: "openai_compat".into(),
                 id: "a".into(),
                 name: "A".into(),
                 enabled: true,
@@ -3979,6 +3983,7 @@ mod tests {
                 models: vec![],
             },
             crate::provider::ProviderInfo {
+            endpoint_type: "openai_compat".into(),
                 id: "b".into(),
                 name: "B".into(),
                 enabled: true,
@@ -3988,6 +3993,7 @@ mod tests {
                 models: vec![],
             },
             crate::provider::ProviderInfo {
+            endpoint_type: "openai_compat".into(),
                 id: "c".into(),
                 name: "C".into(),
                 enabled: true,
@@ -4048,6 +4054,7 @@ mod tests {
         state.current_model = "m1".to_string(); // 预设当前模型
         state.active_provider_idx = Some(0); // 预设活跃 Provider
         state.providers = vec![crate::provider::ProviderInfo {
+            endpoint_type: "openai_compat".into(),
             id: "ds".into(),
             name: "DS".into(),
             enabled: true,
@@ -4102,6 +4109,7 @@ mod tests {
         state.current_model = "m1".into();
         state.active_provider_idx = Some(0);
         state.providers = vec![crate::provider::ProviderInfo {
+            endpoint_type: "openai_compat".into(),
             id: "ds".into(),
             name: "DS".into(),
             enabled: true,
@@ -4144,6 +4152,7 @@ mod tests {
         state.current_model = "m1".into();
         state.active_provider_idx = Some(0);
         state.providers = vec![crate::provider::ProviderInfo {
+            endpoint_type: "openai_compat".into(),
             id: "ds".into(),
             name: "DS".into(),
             enabled: true,
@@ -4178,6 +4187,7 @@ mod tests {
         let mut state = TuiState::new();
         state.providers = vec![
             crate::provider::ProviderInfo {
+            endpoint_type: "openai_compat".into(),
                 id: "elysiver".into(),
                 name: "Elysiver".into(),
                 enabled: true,
@@ -4194,6 +4204,7 @@ mod tests {
                 }],
             },
             crate::provider::ProviderInfo {
+            endpoint_type: "openai_compat".into(),
                 id: "deepseek".into(),
                 name: "DeepSeek".into(),
                 enabled: true,
@@ -4237,6 +4248,7 @@ mod tests {
         let mut state = TuiState::new();
         state.providers = vec![
             crate::provider::ProviderInfo {
+            endpoint_type: "openai_compat".into(),
                 id: "a".into(),
                 name: "A".into(),
                 enabled: true,
@@ -4253,6 +4265,7 @@ mod tests {
                 }],
             },
             crate::provider::ProviderInfo {
+            endpoint_type: "openai_compat".into(),
                 id: "b".into(),
                 name: "B".into(),
                 enabled: true,
@@ -4288,6 +4301,7 @@ mod tests {
     fn test_provider_space_sets_active_provider_idx() {
         let mut state = TuiState::new();
         state.providers = vec![crate::provider::ProviderInfo {
+            endpoint_type: "openai_compat".into(),
             id: "ds".into(),
             name: "DS".into(),
             enabled: true,
@@ -4316,6 +4330,7 @@ mod tests {
     fn test_provider_space_toggle_deactivates() {
         let mut state = TuiState::new();
         state.providers = vec![crate::provider::ProviderInfo {
+            endpoint_type: "openai_compat".into(),
             id: "ds".into(),
             name: "DS".into(),
             enabled: true,
@@ -4348,6 +4363,7 @@ mod tests {
         let mut state = TuiState::new();
         state.providers = vec![
             crate::provider::ProviderInfo {
+            endpoint_type: "openai_compat".into(),
                 id: "a".into(),
                 name: "A".into(),
                 enabled: true,
@@ -4364,6 +4380,7 @@ mod tests {
                 }],
             },
             crate::provider::ProviderInfo {
+            endpoint_type: "openai_compat".into(),
                 id: "b".into(),
                 name: "B".into(),
                 enabled: true,
@@ -4408,6 +4425,7 @@ mod tests {
         let mut state = TuiState::new();
         state.persistence_disabled = true;
         state.providers = vec![crate::provider::ProviderInfo {
+            endpoint_type: "openai_compat".into(),
             id: "ds".into(),
             name: "DS".into(),
             enabled: true,
@@ -4449,6 +4467,7 @@ mod tests {
         state.persistence_disabled = true;
         state.providers = vec![
             crate::provider::ProviderInfo {
+            endpoint_type: "openai_compat".into(),
                 id: "a".into(),
                 name: "A".into(),
                 enabled: true,
@@ -4465,6 +4484,7 @@ mod tests {
                 }],
             },
             crate::provider::ProviderInfo {
+            endpoint_type: "openai_compat".into(),
                 id: "b".into(),
                 name: "B".into(),
                 enabled: true,
@@ -4505,6 +4525,7 @@ mod tests {
         state.current_model = "shared".into();
         state.providers = vec![
             crate::provider::ProviderInfo {
+            endpoint_type: "openai_compat".into(),
                 id: "first".into(),
                 name: "First".into(),
                 enabled: true,
@@ -4521,6 +4542,7 @@ mod tests {
                 }],
             },
             crate::provider::ProviderInfo {
+            endpoint_type: "openai_compat".into(),
                 id: "second".into(),
                 name: "Second".into(),
                 enabled: true,
@@ -4550,6 +4572,7 @@ mod tests {
         state.current_model = "model-b".into();
         state.providers = vec![
             crate::provider::ProviderInfo {
+            endpoint_type: "openai_compat".into(),
                 id: "a".into(),
                 name: "A".into(),
                 enabled: true,
@@ -4566,6 +4589,7 @@ mod tests {
                 }],
             },
             crate::provider::ProviderInfo {
+            endpoint_type: "openai_compat".into(),
                 id: "b".into(),
                 name: "B".into(),
                 enabled: true,
@@ -4594,6 +4618,7 @@ mod tests {
         state.current_model = "shared".into();
         state.providers = vec![
             crate::provider::ProviderInfo {
+            endpoint_type: "openai_compat".into(),
                 id: "first".into(),
                 name: "First".into(),
                 enabled: true,
@@ -4610,6 +4635,7 @@ mod tests {
                 }],
             },
             crate::provider::ProviderInfo {
+            endpoint_type: "openai_compat".into(),
                 id: "second".into(),
                 name: "Second".into(),
                 enabled: true,
@@ -4637,6 +4663,7 @@ mod tests {
         let mut state = TuiState::new();
         state.current_model = "m2".into();
         state.providers = vec![crate::provider::ProviderInfo {
+            endpoint_type: "openai_compat".into(),
             id: "p".into(),
             name: "P".into(),
             enabled: true,
@@ -4675,6 +4702,7 @@ mod tests {
         state.current_model = "m1".into();
         state.providers = vec![
             crate::provider::ProviderInfo {
+            endpoint_type: "openai_compat".into(),
                 id: "p0".into(),
                 name: "P0".into(),
                 enabled: true,
@@ -4691,6 +4719,7 @@ mod tests {
                 }],
             },
             crate::provider::ProviderInfo {
+            endpoint_type: "openai_compat".into(),
                 id: "p1".into(),
                 name: "P1".into(),
                 enabled: true,
@@ -4720,6 +4749,7 @@ mod tests {
         // disabled provider 的 cursor 仍可定位，但 Space 的 guard 检查列表非空+游标在范围内
         let mut state = TuiState::new();
         state.providers = vec![crate::provider::ProviderInfo {
+            endpoint_type: "openai_compat".into(),
             id: "ds".into(),
             name: "DS".into(),
             enabled: false,
