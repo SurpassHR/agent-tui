@@ -122,29 +122,51 @@ impl MainView {
         theme: &Theme,
         main_view: &Self,
         msg_index: usize,
+        max_width: u16,
     ) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
         let blocks = crate::message::build_block_refs(&main_view.messages);
 
         match message.role {
             ChatRole::User => {
-                lines.push(Line::from(vec![" 你 ".to_string().fg(theme.accent).bold()]));
-                // 分隔线和内容
-                lines.push(Line::from(vec![" ─".to_string().fg(theme.text_dim)]));
                 let clean = crate::strip_ansi(&message.text);
                 let md_lines = markdown::render(&clean, theme);
-                for md_line in md_lines {
-                    let mut spans = vec![Span::from(" ")];
-                    spans.extend(md_line.spans.into_iter());
+
+                if md_lines.is_empty() {
+                    return lines;
+                }
+
+                let user_bg = theme.user_bg;
+                let mw = max_width as usize;
+
+                // 顶部 padding 行（满宽背景）
+                lines.push(Line::from(vec![Span::from(" ".repeat(mw)).bg(user_bg)]));
+
+                // 内容行（左对齐 + 左右各 1 格 padding + 满宽背景）
+                for md_line in &md_lines {
+                    let line_w = md_line.width();
+                    // 内容 + 左右 padding 后的宽度
+                    let content_pad_w = line_w + 2;
+                    let right_fill = mw.saturating_sub(content_pad_w);
+
+                    let mut spans = vec![Span::from(" ").bg(user_bg)];
+                    for span in &md_line.spans {
+                        spans.push(span.clone().bg(user_bg));
+                    }
+                    spans.push(Span::from(" ").bg(user_bg));
+                    if right_fill > 0 {
+                        spans.push(Span::from(" ".repeat(right_fill)).bg(user_bg));
+                    }
                     lines.push(Line::from(spans));
                 }
+
+                // 底部 padding 行（满宽背景）
+                lines.push(Line::from(vec![Span::from(" ".repeat(mw)).bg(user_bg)]));
+
                 lines.push(Line::from(""));
             }
 
             ChatRole::Assistant => {
-                lines.push(Line::from(vec![" pi ".to_string().fg(theme.accent).bold()]));
-                lines.push(Line::from(vec![" ─".to_string().fg(theme.text_dim)]));
-
                 // 若 content 为空（ContentUpdate 尚未到达），回退到 text/thinking 字段
                 if message.content.is_empty() {
                     if let Some(ref thinking) = message.thinking {
@@ -402,7 +424,7 @@ impl Component for MainView {
         let mut msg_line_ranges: Vec<(usize, usize)> = Vec::new();
         for (i, msg) in self.messages.iter().enumerate() {
             let start = all_lines.len();
-            all_lines.extend(Self::render_message(msg, theme, self, i));
+            all_lines.extend(Self::render_message(msg, theme, self, i, inner.width));
             let end = all_lines.len();
             msg_line_ranges.push((start, end));
         }
@@ -415,7 +437,9 @@ impl Component for MainView {
             Vec::new()
         } else if self.scroll_mode == ScrollMode::Pinned {
             // Pinned 模式使用行级 line_scroll 偏移
-            let start = self.line_scroll.min(all_lines.len().saturating_sub(msg_area_height as usize));
+            let start = self
+                .line_scroll
+                .min(all_lines.len().saturating_sub(msg_area_height as usize));
             all_lines[start..]
                 .iter()
                 .take(msg_area_height as usize)
@@ -875,7 +899,7 @@ mod tests {
         }];
         let mv = MainView::default();
         let theme = Theme::cyan();
-        let lines = MainView::render_message(&msg, &theme, &mv, 0);
+        let lines = MainView::render_message(&msg, &theme, &mv, 0, 80);
         let all_text: String = lines
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))

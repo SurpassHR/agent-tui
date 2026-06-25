@@ -3458,15 +3458,24 @@ fn load_session_messages(path: &str) -> std::result::Result<Vec<ChatMessage>, St
 
         let timestamp = msg.get("timestamp").and_then(|v| v.as_u64()).unwrap_or(0);
 
+        let final_role = if chat_role == ChatRole::User
+            && text.starts_with("Task: You are a delegated subagent")
+        {
+            // pi 内部 subagent 任务描述，不是用户输入，按 System 渲染
+            ChatRole::System
+        } else {
+            chat_role
+        };
+
         messages.push(ChatMessage {
             id: msg_id,
-            content: if chat_role == ChatRole::Tool {
+            content: if final_role == ChatRole::Tool {
                 vec![]
             } else {
                 content_blocks
             },
-            agent_id: String::new(), // 由调用方在插入时设置
-            role: chat_role,
+            agent_id: String::new(),
+            role: final_role,
             text,
             thinking,
             tool_call,

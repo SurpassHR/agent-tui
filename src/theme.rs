@@ -33,6 +33,8 @@ pub struct Theme {
     pub link_color: Color,
     /// 警告/确认弹窗边框颜色
     pub warning: Color,
+    /// 用户消息气泡背景色
+    pub user_bg: Color,
 }
 
 impl Theme {
@@ -58,6 +60,7 @@ impl Theme {
             code_bg: Color::Rgb(10, 22, 28),
             link_color: Color::Rgb(151, 255, 245),
             warning: Color::Rgb(255, 159, 67),
+            user_bg: Color::Rgb(45, 60, 72),
         }
     }
 }
@@ -95,5 +98,6 @@ mod tests {
         assert_eq!(theme.code_bg, Color::Rgb(10, 22, 28));
         assert_eq!(theme.link_color, Color::Rgb(151, 255, 245));
         assert_eq!(theme.warning, Color::Rgb(255, 159, 67));
+        assert_eq!(theme.user_bg, Color::Rgb(45, 60, 72));
     }
 }
