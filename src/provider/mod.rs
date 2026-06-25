@@ -51,6 +51,9 @@ pub struct ProviderInfo {
     /// 模型列表（标准模式使用）
     #[serde(default)]
     pub models: Vec<ModelInfo>,
+    /// 端点类型："openai_compat" | "openai_responses" | "anthropic_messages" | "gemini"
+    #[serde(default = "default_endpoint_type")]
+    pub endpoint_type: String,
 }
 
 /// 模型定义
@@ -75,6 +78,32 @@ fn default_tier() -> String {
 
 fn default_context_window() -> u32 {
     128000
+}
+
+fn default_endpoint_type() -> String {
+    "openai_compat".to_string()
+}
+
+impl ProviderInfo {
+    /// endpoint_type → pi KnownApi 值
+    pub fn pi_api(&self) -> &str {
+        match self.endpoint_type.as_str() {
+            "openai_responses" => "openai-responses",
+            "anthropic_messages" => "anthropic-messages",
+            "gemini" => "google-generative-ai",
+            _ => "openai-completions",
+        }
+    }
+
+    /// endpoint_type → Router 路径
+    pub fn endpoint_path(&self) -> &str {
+        match self.endpoint_type.as_str() {
+            "openai_responses" => "/v1/responses",
+            "anthropic_messages" => "/v1/messages",
+            "gemini" => "/v1/models/:model:generateContent",
+            _ => "/v1/chat/completions",
+        }
+    }
 }
 
 impl ProviderConfig {
@@ -181,8 +210,14 @@ export default async function (pi: ExtensionAPI) {
 "#,
     );
 
-    // 注册 provider
-    s.push_str(&format!("  pi.registerProvider(\"local\", {{\n    baseUrl: \"http://127.0.0.1:{}/v1\",\n    apiKey: \"LOCAL_API_KEY\",\n    api: \"openai-completions\",\n    headers: {{\n      \"X-Session-Id\": \"!cat /tmp/pi-session-id\",\n    }},\n    compat: {{\n      supportsDeveloperRole: true,\n      supportsReasoningEffort: true,\n    }},\n    models: [\n", port));
+    // 注册 provider — api 取第一个启用 provider 的端点类型
+    let api = config
+        .providers
+        .iter()
+        .find(|p| p.enabled)
+        .map(|p| p.pi_api())
+        .unwrap_or("openai-completions");
+    s.push_str(&format!("  pi.registerProvider(\"local\", {{\n    baseUrl: \"http://127.0.0.1:{}/v1\",\n    apiKey: \"LOCAL_API_KEY\",\n    api: \"{}\",\n    headers: {{\n      \"X-Session-Id\": \"!cat /tmp/pi-session-id\",\n    }},\n    compat: {{\n      supportsDeveloperRole: true,\n      supportsReasoningEffort: true,\n    }},\n    models: [\n", port, api));
 
     for p in &config.providers {
         for m in &p.models {

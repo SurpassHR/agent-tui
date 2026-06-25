@@ -544,6 +544,7 @@ impl TuiState {
                                 base_url: String::new(),
                                 api_key: String::new(),
                                 models: vec![],
+                                endpoint_type: "openai_compat".into(),
                             },
                             field_focus: 4,
                             models_text: String::new(),
@@ -609,6 +610,7 @@ impl TuiState {
                         bridge: false,
                         base_url: "https://api.openai.com/v1".into(),
                         api_key: String::new(),
+                        endpoint_type: "openai_compat".into(),
                         models: vec![crate::provider::ModelInfo {
                             id: "gpt-4o".into(),
                             name: "GPT-4o".into(),
