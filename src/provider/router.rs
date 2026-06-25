@@ -40,7 +40,7 @@ pub async fn start_router(config: SharedConfig) -> Result<u16, crate::errors::Er
         .route("/v1/chat/completions", post(handle_chat_completions))
         .route("/v1/responses", post(handle_responses))
         .route("/v1/messages", post(handle_messages))
-        .route("/v1/models/{model}:generateContent", post(handle_gemini))
+        .route("/v1/models/{*path}", post(handle_gemini))
         .route("/v1/models", get(handle_models))
         .with_state(state);
 
@@ -175,10 +175,10 @@ async fn handle_messages(
     }
 }
 
-/// POST /v1/models/{model}:generateContent
+/// POST /v1/models/{*path}（Gemini generateContent 等操作）
 async fn handle_gemini(
     State(state): State<Arc<AppState>>,
-    Path(model): Path<String>,
+    Path(path): Path<String>,
     headers: HeaderMap,
     body: Body,
 ) -> Response {
@@ -189,7 +189,7 @@ async fn handle_gemini(
             return (StatusCode::NOT_FOUND, "{\"error\":\"no active provider\"}").into_response();
         }
     };
-    let path = format!("/v1/models/{}:generateContent", model);
+    let path = format!("/v1/models/{}", path);
     if provider.bridge {
         bridge_proxy(&state.http, &provider.base_url, &path, headers, body).await
     } else {
