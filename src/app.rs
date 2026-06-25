@@ -2328,7 +2328,9 @@ impl App {
             .current_model
             .clone_from(&self.tui.current_model);
         // 同步思考级别到侧边栏
-        self.tui.sidebar.thinking_level = self.runtime.thinking_level
+        self.tui.sidebar.thinking_level = self
+            .runtime
+            .thinking_level
             .clone()
             .unwrap_or_else(|| "high".into());
         self.tui.sidebar.port = self.tui.router_port;

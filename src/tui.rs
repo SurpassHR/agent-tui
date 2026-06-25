@@ -15,7 +15,10 @@ use crate::errors::Result;
 use crate::message::ToolStatus;
 
 /// 循环切换思考级别
-fn cycle_thinking_level(current: &str, thinking_level_map: Option<&std::collections::HashMap<String, Option<String>>>) -> &'static str {
+fn cycle_thinking_level(
+    current: &str,
+    thinking_level_map: Option<&std::collections::HashMap<String, Option<String>>>,
+) -> &'static str {
     const ALL_LEVELS: &[&str] = &["off", "minimal", "low", "medium", "high", "xhigh"];
 
     // 根据 thinking_level_map 过滤可用级别
@@ -23,9 +26,9 @@ fn cycle_thinking_level(current: &str, thinking_level_map: Option<&std::collecti
         ALL_LEVELS
             .iter()
             .filter(|&&level| match map.get(level) {
-                Some(Some(_)) => true,  // 映射到具体值
-                None => true,           // 未配置，使用默认
-                Some(None) => false,    // 显式禁用
+                Some(Some(_)) => true, // 映射到具体值
+                None => true,          // 未配置，使用默认
+                Some(None) => false,   // 显式禁用
             })
             .copied()
             .collect()

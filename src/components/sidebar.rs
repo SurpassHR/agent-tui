@@ -388,11 +388,11 @@ impl Sidebar {
 
         // ── THINKING LEVEL ──
         lines.push(Line::from(vec![
-            Span::from(sep.clone()).fg(theme.border_dim),
+            Span::from(sep.clone()).fg(theme.border_dim)
         ]));
-        lines.push(Line::from(vec![
-            Span::from(" THINKING").fg(theme.heading).bold(),
-        ]));
+        lines.push(Line::from(vec![Span::from(" THINKING")
+            .fg(theme.heading)
+            .bold()]));
         let thinking_icon = match self.thinking_level.as_str() {
             "off" => "○",
             "minimal" | "low" => "◦",
