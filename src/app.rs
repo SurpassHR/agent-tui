@@ -1585,29 +1585,63 @@ impl App {
                 file_path,
             } => {
                 tracing::info!("连接到会话: {}", session_id);
-                // 设置为 agent 活动会话
-                self.active_sessions.insert(session_id.clone());
-                // 同步 session 信息
-                self.session.id = session_id.clone();
-                self.session.file_path = Some(file_path.clone());
-                // 从工作区树获取会话名称
+                // 启动 pi agent 进程
+                let cwd = std::env::current_dir().unwrap_or_default();
+                let event_tx = self.event_tx.clone().unwrap_or_else(|| {
+                    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+                    tx
+                });
+                match self
+                    .agent_manager
+                    .spawn(
+                        session_id.clone(),
+                        std::path::PathBuf::from(&file_path),
+                        cwd,
+                        event_tx,
+                    )
+                    .await
+                {
+                    Ok(()) => {
+                        self.active_sessions.insert(session_id.clone());
+                        // 从工作区树获取会话名称
+                        let name = self
+                            .tui
+                            .workspaces
+                            .iter()
+                            .find_map(|ws| {
+                                ws.sessions.iter().find(|s| s.id == session_id)
+                            })
+                            .map(|s| s.name.clone())
+                            .unwrap_or_default();
+                        self.session.name = Some(name.clone());
+                        // 同时切换到浏览该会话
+                        self.active_agent = Some(session_id.clone());
+                        if let Ok(msgs) = load_session_messages(&file_path) {
+                            self.messages.insert(session_id.clone(), msgs);
+                        }
+                        self.sync_messages_to_main_view(&session_id);
+                        self.sync_components();
+                        self.tui.bottom_bar.status = format!("已连接: {}", name);
+                    }
+                    Err(e) => {
+                        self.tui.bottom_bar.status = format!("连接失败: {}", e);
+                    }
+                }
+                crate::persistence::save(&self.build_persist_state());
+            }
+
+            Action::DisconnectSession(session_id) => {
+                self.agent_manager.kill(&session_id).await;
+                self.active_sessions.remove(&session_id);
+                self.sync_components();
                 let name = self
                     .tui
                     .workspaces
                     .iter()
                     .find_map(|ws| ws.sessions.iter().find(|s| s.id == session_id))
                     .map(|s| s.name.clone())
-                    .unwrap_or_default();
-                self.session.name = Some(name.clone());
-                // 同时切换到浏览该会话
-                self.active_agent = Some(session_id.clone());
-                if let Ok(msgs) = load_session_messages(&file_path) {
-                    self.messages.insert(session_id.clone(), msgs);
-                }
-                self.sync_messages_to_main_view(&session_id);
-                self.sync_components();
-                self.tui.bottom_bar.status = format!("已连接到会话: {}", name);
-                // 保存 UI 状态
+                    .unwrap_or_else(|| session_id.clone());
+                self.tui.bottom_bar.status = format!("已断开: {}", name);
                 crate::persistence::save(&self.build_persist_state());
             }
 
