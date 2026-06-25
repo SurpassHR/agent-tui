@@ -484,14 +484,28 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
     }
 
     // 将当前 pi 进程的 event_rx 转发到统一 channel
+    // 使用 watch channel 以便在 active_agent 变化时动态更新转发目标。
+    let forwarding_agent_id = app.active_agent.clone().unwrap_or_else(|| "default".to_string());
+    let (forwarding_tx, forwarding_rx) = tokio::sync::watch::channel(forwarding_agent_id);
+    app.forwarding_agent_tx = Some(forwarding_tx);
+
     let (dummy_tx, dummy_rx) = tokio::sync::mpsc::unbounded_channel();
     let original_rx = std::mem::replace(&mut client.event_rx, dummy_rx);
-    drop(dummy_tx); // close dummy_rx so it won't be used
+    drop(dummy_tx);
     tokio::spawn(async move {
         let mut rx = original_rx;
-        while let Some(event) = rx.recv().await {
-            if agent_event_tx.send(("default".to_string(), event)).is_err() {
-                break;
+        let mut forwarding_rx = forwarding_rx;
+        loop {
+            tokio::select! {
+                Some(event) = rx.recv() => {
+                    let aid = forwarding_rx.borrow().clone();
+                    if agent_event_tx.send((aid, event)).is_err() {
+                        break;
+                    }
+                }
+                _ = forwarding_rx.changed() => {
+                    // agent_id 已更新，下一个事件会使用新的值
+                }
             }
         }
     });

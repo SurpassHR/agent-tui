@@ -1169,6 +1169,8 @@ pub struct App {
     /// agent 事件统一转发 channel（由 run_tui 创建，供 ConnectSession 使用）
     pub event_tx:
         Option<tokio::sync::mpsc::UnboundedSender<(String, crate::backend::event::PiEvent)>>,
+    /// 默认 pi 进程的事件转发目标 agent_id（运行时动态更新）
+    pub forwarding_agent_tx: Option<tokio::sync::watch::Sender<String>>,
     /// 运行时状态
     pub runtime: AgentRuntimeState,
     /// Agent 状态
@@ -1194,6 +1196,7 @@ impl App {
             active_sessions: std::collections::HashSet::new(),
             agent_manager: crate::backend::agent_manager::AgentManager::new(),
             event_tx: None,
+            forwarding_agent_tx: None,
             runtime: AgentRuntimeState::default(),
             agent_status: AgentStatus::Closed,
             session: SessionInfo::default(),
@@ -1216,6 +1219,7 @@ impl App {
             active_sessions: std::collections::HashSet::new(),
             agent_manager: crate::backend::agent_manager::AgentManager::new(),
             event_tx: None,
+            forwarding_agent_tx: None,
             runtime: AgentRuntimeState::default(),
             agent_status: AgentStatus::Starting,
             session: SessionInfo::default(),
@@ -2037,6 +2041,12 @@ impl App {
 
     /// 渲染前同步所有组件数据
     pub(crate) fn sync_components(&mut self) {
+        // 同步 forwarding_agent_tx（确保默认 pi 的事件转发到当前的 active_agent）
+        if let Some(ref tx) = self.forwarding_agent_tx {
+            let new_id = self.active_agent.clone().unwrap_or_else(|| "default".to_string());
+            let _ = tx.send(new_id);
+        }
+
         if let Some(agent_id) = &self.active_agent {
             if let Some(msgs) = self.messages.get(agent_id) {
                 self.tui.main_view.messages = msgs.clone();
@@ -2686,21 +2696,33 @@ impl App {
 
         // 渲染后将组件中收集的选中文本同步回主 selection
         //（apply_selection 修改的是组件的克隆，mouse up 读的是主 selection）
-        if !self.tui.sidebar.selection.selected_text.is_empty() {
-            self.tui
-                .selection
-                .selected_text
-                .clone_from(&self.tui.sidebar.selection.selected_text);
-        } else if !self.tui.main_view.selection.selected_text.is_empty() {
-            self.tui
-                .selection
-                .selected_text
-                .clone_from(&self.tui.main_view.selection.selected_text);
-        } else if !self.tui.agent_panel.selection.selected_text.is_empty() {
-            self.tui
-                .selection
-                .selected_text
-                .clone_from(&self.tui.agent_panel.selection.selected_text);
+        // 按 panel 字段选择对应组件，避免跨栏误回写
+        match self.tui.selection.panel {
+            SelectionPanel::Sidebar => {
+                if !self.tui.sidebar.selection.selected_text.is_empty() {
+                    self.tui
+                        .selection
+                        .selected_text
+                        .clone_from(&self.tui.sidebar.selection.selected_text);
+                }
+            }
+            SelectionPanel::Content => {
+                if !self.tui.main_view.selection.selected_text.is_empty() {
+                    self.tui
+                        .selection
+                        .selected_text
+                        .clone_from(&self.tui.main_view.selection.selected_text);
+                }
+            }
+            SelectionPanel::AgentPanel => {
+                if !self.tui.agent_panel.selection.selected_text.is_empty() {
+                    self.tui
+                        .selection
+                        .selected_text
+                        .clone_from(&self.tui.agent_panel.selection.selected_text);
+                }
+            }
+            SelectionPanel::None => {}
         }
 
         // ═══ 工作区重命名/创建 Popup ═══
@@ -4883,5 +4905,142 @@ mod tests {
         assert_eq!(state.active_agent_sessions.len(), 2);
         assert!(state.active_agent_sessions.contains(&"sess-a".to_string()));
         assert!(state.active_agent_sessions.contains(&"sess-b".to_string()));
+    }
+
+    /// 测试：active_agent 为非 "default" 时，用户消息和 AI 回复写入同一个条目
+    ///
+    /// 这是回归测试：修复前，默认 pi 的事件转发硬编码 "default"，
+    /// 导致 AI 回复写入 self.messages["default"]，而用户消息写入 self.messages[session_id]，
+    /// sync_components 只同步 active_agent 对应的条目，AI 回复永远不可见。
+    #[tokio::test]
+    async fn test_active_agent_consistency_user_and_assistant_same_entry() {
+        let mut app = App::new_rpc(tokio::sync::mpsc::channel::<Action>(1).0);
+        // 模拟会话恢复后的状态：active_agent 不是 "default"
+        let session_id = "2026-06-25T03-33-session".to_string();
+        app.active_agent = Some(session_id.clone());
+
+        // 1. 用户输入
+        app.handle_action(Action::UserSubmitInput("你好".to_string()))
+            .await
+            .unwrap();
+
+        // 2. AI 回复事件（agent_id 应与 active_agent 一致）
+        app.handle_action(Action::ContentUpdate {
+            agent_id: session_id.clone(),
+            content: vec![crate::message::ContentBlock::Text {
+                text: "你好！有什么可以帮助你的？".to_string(),
+            }],
+        })
+        .await
+        .unwrap();
+        app.handle_action(Action::MessageAppend {
+            agent_id: session_id.clone(),
+            text: "你好！有什么可以帮助你的？".to_string(),
+        })
+        .await
+        .unwrap();
+
+        // 验证：用户和 AI 消息在同一个条目中
+        let msgs = app.messages.get(&session_id).unwrap();
+        assert_eq!(msgs.len(), 2, "应该包含用户消息和 AI 回复");
+        assert!(matches!(msgs[0].role, crate::message::ChatRole::User));
+        assert!(matches!(msgs[1].role, crate::message::ChatRole::Assistant));
+
+        // 验证："default" 条目中没有消息（不应该泄漏）
+        assert!(
+            app.messages.get("default").map_or(true, |m| m.is_empty()),
+            "'default' 条目不应有消息"
+        );
+    }
+
+    /// 测试：sync_components 通过 watch channel 更新 forwarding_agent_tx
+    ///
+    /// 验证当 active_agent 变化时，forwarding_agent_tx 会收到新值。
+    #[tokio::test]
+    async fn test_forwarding_agent_tx_updates_on_active_agent_change() {
+        let mut app = App::new_rpc(tokio::sync::mpsc::channel::<Action>(1).0);
+        let initial_id = "default".to_string();
+
+        // 创建 watch channel（模拟 run_tui 中的设置）
+        let (forwarding_tx, mut forwarding_rx) =
+            tokio::sync::watch::channel(initial_id.clone());
+        app.forwarding_agent_tx = Some(forwarding_tx);
+
+        assert_eq!(*forwarding_rx.borrow(), initial_id);
+
+        // 模拟会话恢复：active_agent 变为 session_id
+        let session_id = "restored-session-123".to_string();
+        app.active_agent = Some(session_id.clone());
+
+        // sync_components 应该将新 agent_id 写入 watch channel
+        app.sync_components();
+
+        // forwarding_rx 应该收到更新
+        assert_eq!(*forwarding_rx.borrow(), session_id);
+    }
+
+    /// 测试：会话恢复后主视图包含正确消息
+    ///
+    /// 模拟完整流程：
+    /// session restore → 用户输入 → AI 回复 → sync_components → main_view 包含所有消息
+    #[tokio::test]
+    async fn test_main_view_has_both_messages_after_session_restore() {
+        let mut app = App::new_rpc(tokio::sync::mpsc::channel::<Action>(1).0);
+        let session_id = "restored-session-abc".to_string();
+
+        // 模拟 run_tui 中的初始化：设置 forwarding_agent_tx
+        let (forwarding_tx, _forwarding_rx) =
+            tokio::sync::watch::channel(session_id.clone());
+        app.forwarding_agent_tx = Some(forwarding_tx);
+        app.active_agent = Some(session_id.clone());
+
+        // 1. 用户发送消息
+        app.handle_action(Action::UserSubmitInput("hello".to_string()))
+            .await
+            .unwrap();
+
+        // 2. sync_components 更新 main_view（render_tui 每帧调用）
+        app.sync_components();
+        assert_eq!(app.tui.main_view.messages.len(), 1);
+        assert!(matches!(
+            app.tui.main_view.messages[0].role,
+            crate::message::ChatRole::User
+        ));
+
+        // 3. AI 回复（agent_id 来自 forwarding_agent_tx = session_id）
+        app.handle_action(Action::ContentUpdate {
+            agent_id: session_id.clone(),
+            content: vec![crate::message::ContentBlock::Text {
+                text: "Hello! How can I help?".to_string(),
+            }],
+        })
+        .await
+        .unwrap();
+        app.handle_action(Action::MessageAppend {
+            agent_id: session_id.clone(),
+            text: "Hello! How can I help?".to_string(),
+        })
+        .await
+        .unwrap();
+
+        // 4. sync_components 将消息同步到主视图
+        app.sync_components();
+
+        // 验证：主视图包含用户消息和 AI 回复
+        assert_eq!(
+            app.tui.main_view.messages.len(),
+            2,
+            "主视图应该包含用户消息和 AI 回复"
+        );
+        assert!(matches!(
+            app.tui.main_view.messages[0].role,
+            crate::message::ChatRole::User
+        ));
+        assert!(matches!(
+            app.tui.main_view.messages[1].role,
+            crate::message::ChatRole::Assistant
+        ));
+        assert!(!app.tui.main_view.messages[1].text.is_empty());
+        assert_eq!(app.tui.main_view.messages[1].content.len(), 1);
     }
 }

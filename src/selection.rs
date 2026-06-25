@@ -46,18 +46,13 @@ pub fn apply_selection(
     let sel_x1 = a_col.min(f_col);
     let sel_x2 = a_col.max(f_col);
 
-    let mut first_line = true;
+    let mut first_content_line = true;
 
     for (i, line) in lines.iter_mut().enumerate() {
         let line_y = area.y + i as u16;
         if line_y < sel_y1 || line_y > sel_y2 {
             continue;
         }
-
-        if !first_line {
-            selection.selected_text.push('\n');
-        }
-        first_line = false;
 
         // 展平该行所有字符（char + 显示宽度 + 原始样式）
         struct CharInfo {
@@ -87,7 +82,14 @@ pub fn apply_selection(
             }
             col += ci.width;
         }
-        selection.selected_text.push_str(&line_text);
+        // 只有实际选中了字符才添加到 selected_text（避免空换行符污染）
+        if !line_text.is_empty() {
+            if !first_content_line {
+                selection.selected_text.push('\n');
+            }
+            first_content_line = false;
+            selection.selected_text.push_str(&line_text);
+        }
 
         // 重建该行 spans：每个字符一个 Span，选中部分加背景
         let mut new_spans: Vec<Span<'static>> = Vec::new();
