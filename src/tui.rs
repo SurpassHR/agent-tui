@@ -1241,6 +1241,32 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                                         app.tui.active_session_cursor += 1;
                                     }
                                 }
+                                crossterm::event::KeyCode::Char('d') => {
+                                    let cursor = app.tui.active_session_cursor;
+                                    if cursor > 0 {
+                                        // 查找第 cursor 个活跃会话的 session_id
+                                        let sid = app.tui.workspaces.iter()
+                                            .flat_map(|ws| &ws.sessions)
+                                            .filter(|s| s.is_online)
+                                            .nth(cursor - 1)
+                                            .map(|s| s.id.clone());
+                                        if let Some(sid) = sid {
+                                            app.handle_action(
+                                                Action::DisconnectSession(sid),
+                                            )
+                                            .await
+                                            .ok();
+                                            // clamp cursor after removal
+                                            let new_count = app.tui.workspaces.iter()
+                                                .flat_map(|ws| &ws.sessions)
+                                                .filter(|s| s.is_online)
+                                                .count();
+                                            if app.tui.active_session_cursor > new_count {
+                                                app.tui.active_session_cursor = new_count;
+                                            }
+                                        }
+                                    }
+                                }
                                 _ => {}
                             }
                         }
