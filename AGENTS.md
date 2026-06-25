@@ -72,8 +72,8 @@ cargo fmt --check                                     # 格式检查
   - `popup.rs` — Popup 浮层组件
 - `src/message.rs` — ChatMessage 消息模型 + ContentBlock + EnteredView
 - `src/provider/` — Provider 路由系统
-  - `mod.rs` — ProviderConfig 数据模型 + 持久化
-  - `router.rs` — axum HTTP 反向代理（按 body.model 字段路由）
+  - `mod.rs` — ProviderConfig 数据模型（含 endpoint_type 端点类型）+ 持久化 + TS 生成
+  - `router.rs` — axum HTTP 反向代理（按 body.model 字段路由，根据 endpoint_type 构造目标路径）
 
 ## 当前架构
 
@@ -138,7 +138,8 @@ pi agent (RPC) ──EventStream──→ tui.rs 事件循环
 ## 功能要点
 
 - **工作区**：名称从 JSONL `cwd` 字段自动提取，显示末级目录（重名时加父级 `/` 区分）；手动添加需输入校验通过的项目路径
-- **持久化**：`~/.config/agent-tui/state.json` — 工作区展开状态 + 活跃会话 ID，退出时自动保存，启动时恢复
+- **Provider 端点类型**：支持 openai_compat / openai_responses / anthropic_messages / gemini 四种端点，TS 动态生成 api 字段，配置变更时自动重新生成 local-provider.ts
+- **持久化**：`~/.config/agent-tui/state.json` — 工作区展开状态 + 活跃会话 ID，退出时自动保存，启动时恢复；`~/.config/agent-tui/providers.json` — Provider 配置
 - **确认弹窗**：删除工作区/会话前弹出确认框（`d` 键触发，Enter 确认 / Esc 取消）
 
 ## 当前已知局限
