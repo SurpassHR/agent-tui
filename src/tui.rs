@@ -14,6 +14,13 @@ use crate::backend::rpc::PiRpcBackend;
 use crate::errors::Result;
 use crate::message::ToolStatus;
 
+/// 循环切换思考级别
+fn cycle_thinking_level(current: &str) -> &'static str {
+    const LEVELS: &[&str] = &["off", "minimal", "low", "medium", "high", "xhigh"];
+    let idx = LEVELS.iter().position(|&l| l == current).unwrap_or(4); // 默认 high
+    LEVELS[(idx + 1) % LEVELS.len()]
+}
+
 /// 将 PiEvent 翻译为一个或多个 Action
 ///
 /// 对于 MessageUpdate，同时发出 delta 事件（打字机效果）和 ContentUpdate（块数组快照）。
@@ -1183,6 +1190,27 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                                     .await
                                     .ok();
                             }
+                        }
+
+                        // Shift+Tab: 循环切换思考级别
+                        crossterm::event::KeyCode::Tab
+                            if key.modifiers.contains(crossterm::event::KeyModifiers::SHIFT) =>
+                        {
+                            let current = app.runtime.thinking_level
+                                .as_deref()
+                                .unwrap_or("high");
+                            let next = cycle_thinking_level(current);
+                            let agent_id = app.active_agent.clone().unwrap_or_default();
+                            if let Some(session_client) = app.agent_manager.client_mut(&agent_id) {
+                                let _ = session_client
+                                    .notify(serde_json::json!({
+                                        "type": "set_thinking_level",
+                                        "level": next,
+                                    }))
+                                    .await;
+                            }
+                            app.runtime.thinking_level = Some(next.to_string());
+                            app.tui.bottom_bar.status = format!("思考级别: {}", next);
                         }
 
                         // Ctrl+C: 退出
