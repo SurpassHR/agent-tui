@@ -25,15 +25,15 @@ pub struct AgentPanel {
     pub has_focus: bool,
     /// 当前聚焦的子区
     pub subsection: AgentPanelSubsection,
-    /// subagent 选中光标（仅索引 subagents 列表，不含 pi agent）
+    /// subagent 选中光标（0 = AGENTS title, 1..=N = subagent 列表项）
     pub cursor: usize,
     /// skill 列表
     pub skills: Vec<SkillInfo>,
-    /// skill 选中光标
+    /// skill 选中光标（0 = SKILLS title, 1..=N = skill 列表项）
     pub skill_cursor: usize,
     /// MCP server 列表
     pub mcps: Vec<McpInfo>,
-    /// MCP 选中光标
+    /// MCP 选中光标（0 = MCPS title, 1..=N = MCP 列表项）
     pub mcp_cursor: usize,
     /// 选区状态
     pub selection: SelectionState,
@@ -90,7 +90,15 @@ impl Component for AgentPanel {
 
         // ── AGENTS ──
         let count = self.subagents.len();
-        let agents_title = if self.has_focus && self.subsection == AgentPanelSubsection::Agents {
+        let agents_selected =
+            self.has_focus && self.subsection == AgentPanelSubsection::Agents && self.cursor == 0;
+        let agents_title = if agents_selected {
+            Line::from(vec![
+                "▎".to_string().fg(theme.accent),
+                format!("AGENTS ({})", count).fg(theme.accent).bold(),
+            ])
+            .style(Style::default().bg(theme.highlight_bg))
+        } else if self.has_focus && self.subsection == AgentPanelSubsection::Agents {
             Line::from(vec![
                 "▎".to_string().fg(theme.accent),
                 format!("AGENTS ({})", count).fg(theme.accent).bold(),
@@ -115,14 +123,14 @@ impl Component for AgentPanel {
             .style(Style::default().bg(theme.highlight_bg)),
         );
 
-        // subagent 列表（可选中）
+        // subagent 列表（可选中，cursor 偏移: 0=title, i+1=item）
         for (i, sa) in self.subagents.iter().enumerate() {
             if sa.name == agent {
                 continue;
             }
             let is_selected = self.has_focus
                 && self.subsection == AgentPanelSubsection::Agents
-                && i == self.cursor;
+                && i + 1 == self.cursor;
             let (fg, bg) = if is_selected {
                 (theme.selection_fg, theme.highlight_bg)
             } else {
@@ -142,7 +150,16 @@ impl Component for AgentPanel {
         // ── SKILLS ──
         lines.push(Line::from(""));
         let skill_count = self.skills.len();
-        let skills_title = if self.has_focus && self.subsection == AgentPanelSubsection::Skills {
+        let skills_selected = self.has_focus
+            && self.subsection == AgentPanelSubsection::Skills
+            && self.skill_cursor == 0;
+        let skills_title = if skills_selected {
+            Line::from(vec![
+                "▎".to_string().fg(theme.accent),
+                format!("SKILLS ({})", skill_count).fg(theme.accent).bold(),
+            ])
+            .style(Style::default().bg(theme.highlight_bg))
+        } else if self.has_focus && self.subsection == AgentPanelSubsection::Skills {
             Line::from(vec![
                 "▎".to_string().fg(theme.accent),
                 format!("SKILLS ({})", skill_count).fg(theme.accent).bold(),
@@ -167,7 +184,7 @@ impl Component for AgentPanel {
                 }
                 let is_selected = self.has_focus
                     && self.subsection == AgentPanelSubsection::Skills
-                    && i == self.skill_cursor;
+                    && i + 1 == self.skill_cursor;
                 let (fg, bg) = if is_selected {
                     (theme.selection_fg, theme.highlight_bg)
                 } else {
@@ -188,7 +205,15 @@ impl Component for AgentPanel {
         // ── MCPS ──
         lines.push(Line::from(""));
         let mcp_count = self.mcps.len();
-        let mcps_title = if self.has_focus && self.subsection == AgentPanelSubsection::Mcps {
+        let mcps_selected =
+            self.has_focus && self.subsection == AgentPanelSubsection::Mcps && self.mcp_cursor == 0;
+        let mcps_title = if mcps_selected {
+            Line::from(vec![
+                "▎".to_string().fg(theme.accent),
+                format!("MCPS ({})", mcp_count).fg(theme.accent).bold(),
+            ])
+            .style(Style::default().bg(theme.highlight_bg))
+        } else if self.has_focus && self.subsection == AgentPanelSubsection::Mcps {
             Line::from(vec![
                 "▎".to_string().fg(theme.accent),
                 format!("MCPS ({})", mcp_count).fg(theme.accent).bold(),
@@ -209,7 +234,7 @@ impl Component for AgentPanel {
             for (i, mcp) in self.mcps.iter().enumerate() {
                 let is_selected = self.has_focus
                     && self.subsection == AgentPanelSubsection::Mcps
-                    && i == self.mcp_cursor;
+                    && i + 1 == self.mcp_cursor;
                 let (fg, bg) = if is_selected {
                     (theme.selection_fg, theme.highlight_bg)
                 } else {
@@ -234,7 +259,14 @@ impl Component for AgentPanel {
 
         // ── TASKS ──
         lines.push(Line::from(""));
-        let tasks_title = if self.has_focus && self.subsection == AgentPanelSubsection::Tasks {
+        let tasks_selected = self.has_focus && self.subsection == AgentPanelSubsection::Tasks;
+        let tasks_title = if tasks_selected {
+            Line::from(vec![
+                "▎".to_string().fg(theme.accent),
+                "TASKS".to_string().fg(theme.accent).bold(),
+            ])
+            .style(Style::default().bg(theme.highlight_bg))
+        } else if self.has_focus && self.subsection == AgentPanelSubsection::Tasks {
             Line::from(vec![
                 "▎".to_string().fg(theme.accent),
                 "TASKS".to_string().fg(theme.accent).bold(),

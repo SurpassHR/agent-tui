@@ -171,8 +171,10 @@ pub struct TuiState {
     pub workspaces: Vec<WorkspaceNode>,
     /// 焦点面板
     pub focus_panel: FocusPanel,
-    /// 侧边栏光标位置（扁平化列表中的索引）
+    /// 侧边栏光标位置（0 = ACTIVE SESSION title / WORKSPACE title / ...）
     pub sidebar_cursor: usize,
+    /// 活跃会话区选中光标（0 = ACTIVE SESSION title）
+    pub active_session_cursor: usize,
     /// 侧边栏子区
     pub sidebar_subsection: SidebarSubsection,
     /// 主视图子区
@@ -413,6 +415,7 @@ impl TuiState {
             workspaces: Vec::new(),
             focus_panel: FocusPanel::MainView,
             sidebar_cursor: 0,
+            active_session_cursor: 0,
             sidebar_subsection: SidebarSubsection::Workspace,
             main_view_subsection: MainViewSubsection::Input,
             agent_panel_subsection: AgentPanelSubsection::Agents,
@@ -446,9 +449,9 @@ impl TuiState {
         }
     }
 
-    /// 计算侧边栏可见项的扁平化数量（展开的工作区占用 header + sessions，折叠的只占 header）
+    /// 计算侧边栏工作区子区的可选项总数（0 = WORKSPACE title，1..=N = 树节点）
     pub fn sidebar_visible_count(&self) -> usize {
-        let mut count = 0;
+        let mut count = 1; // WORKSPACE title
         for ws in &self.workspaces {
             count += 1; // workspace header
             if ws.expanded {
@@ -514,13 +517,18 @@ impl TuiState {
                     true
                 }
                 KeyCode::Down => {
-                    if self.provider_cursor < self.providers.len() {
+                    if self.provider_cursor < self.providers.len() + 1 {
                         self.provider_cursor += 1;
                     }
                     true
                 }
                 KeyCode::Enter => {
-                    if self.provider_cursor == self.providers.len() || self.providers.is_empty() {
+                    if self.provider_cursor == 0 {
+                        // title 行，暂无可触发操作
+                        return true;
+                    }
+                    if self.provider_cursor == self.providers.len() + 1 || self.providers.is_empty()
+                    {
                         self.provider_popup = None;
                         self.provider_editor = Some(ProviderEditor {
                             is_new: true,
@@ -540,22 +548,24 @@ impl TuiState {
                             model_mgr: None,
                         });
                     } else if !self.providers.is_empty() {
-                        self.open_edit_provider_editor(self.provider_cursor);
+                        self.open_edit_provider_editor(self.provider_cursor - 1);
                     }
                     true
                 }
                 KeyCode::Char(' ')
                     if !self.providers.is_empty()
-                        && self.provider_cursor < self.providers.len() =>
+                        && self.provider_cursor > 0
+                        && self.provider_cursor <= self.providers.len() =>
                 {
-                    // Space → toggle：激活 / 取消激活
-                    if let Some(p) = self.providers.get(self.provider_cursor) {
-                        let already_active = self.active_provider_idx == Some(self.provider_cursor);
+                    // Space → toggle：激活 / 取消激活（cursor 偏移 1 = 列表第一项）
+                    let p_idx = self.provider_cursor - 1;
+                    if let Some(p) = self.providers.get(p_idx) {
+                        let already_active = self.active_provider_idx == Some(p_idx);
                         if already_active {
                             self.active_provider_idx = None;
                             self.current_model.clear();
                         } else if let Some(first) = p.models.first() {
-                            self.active_provider_idx = Some(self.provider_cursor);
+                            self.active_provider_idx = Some(p_idx);
                             self.current_model = first.id.clone();
                         }
                         self.model_just_switched = true;
@@ -564,10 +574,11 @@ impl TuiState {
                 }
                 KeyCode::Char('e')
                     if !self.providers.is_empty()
-                        && self.provider_cursor < self.providers.len() =>
+                        && self.provider_cursor > 0
+                        && self.provider_cursor <= self.providers.len() =>
                 {
-                    // e → 编辑 provider
-                    self.open_edit_provider_editor(self.provider_cursor);
+                    // e → 编辑 provider（cursor 偏移 1 = 列表第一项）
+                    self.open_edit_provider_editor(self.provider_cursor - 1);
                     true
                 }
                 KeyCode::Char('d')
@@ -653,15 +664,18 @@ impl TuiState {
             }
             KeyCode::Down => {
                 let filtered = self.filtered_models();
-                if self.model_cursor + 1 < filtered.len() {
+                if self.model_cursor < filtered.len() {
                     self.model_cursor += 1;
                 }
                 true
             }
             KeyCode::Enter => {
+                if self.model_cursor == 0 {
+                    return true; // MODEL title，暂无可触发操作
+                }
                 let model_id = {
                     let filtered = self.filtered_models();
-                    filtered.get(self.model_cursor).map(|m| m.id.clone())
+                    filtered.get(self.model_cursor - 1).map(|m| m.id.clone())
                 };
                 if let Some(mid) = model_id {
                     // MODEL 区显示的模型均来自当前活跃 Provider，直接用其索引
@@ -672,10 +686,13 @@ impl TuiState {
                 true
             }
             KeyCode::Char(' ') => {
+                if self.model_cursor == 0 {
+                    return true; // MODEL title，暂无可触发操作
+                }
                 // Space → toggle：切换模型选中/取消
                 let model_id = {
                     let filtered = self.filtered_models();
-                    filtered.get(self.model_cursor).map(|m| m.id.clone())
+                    filtered.get(self.model_cursor - 1).map(|m| m.id.clone())
                 };
                 if let Some(ref mid) = model_id {
                     if self.current_model == *mid {
@@ -1093,8 +1110,12 @@ impl TuiState {
         }
     }
 
+    /// cursor 0 = WORKSPACE title（无操作），1..=N = 树节点
     pub fn sidebar_item_at(&self, cursor: usize) -> Option<(bool, usize, Option<usize>)> {
-        let mut idx = 0;
+        if cursor == 0 {
+            return None; // WORKSPACE title
+        }
+        let mut idx = 1;
         for (wi, ws) in self.workspaces.iter().enumerate() {
             if idx == cursor {
                 return Some((true, wi, None));
@@ -1992,8 +2013,8 @@ impl App {
             .clone_from(&self.tui.current_model);
         self.tui.sidebar.port = self.tui.router_port;
         self.tui.sidebar.active_provider_idx = self.tui.active_provider_idx;
-        // Clamp provider_cursor to valid range（含 add provider 行）
-        let max_provider = self.tui.providers.len();
+        // Clamp provider_cursor to valid range（0=title, 1..=N=providers, N+1=add）
+        let max_provider = self.tui.providers.len() + 1;
         if self.tui.provider_cursor > max_provider {
             self.tui.provider_cursor = max_provider;
         }
@@ -2014,6 +2035,7 @@ impl App {
         self.tui.main_view.has_focus = self.tui.focus_panel == FocusPanel::MainView;
         self.tui.agent_panel.has_focus = self.tui.focus_panel == FocusPanel::AgentPanel;
         self.tui.sidebar.cursor = self.tui.sidebar_cursor;
+        self.tui.sidebar.active_session_cursor = self.tui.active_session_cursor;
         // 同步子区到组件
         self.tui.sidebar.subsection = self.tui.sidebar_subsection;
         self.tui.main_view.subsection = self.tui.main_view_subsection;
@@ -3676,7 +3698,7 @@ mod tests {
         state.focus_panel = FocusPanel::Sidebar;
         state.sidebar_subsection = SidebarSubsection::Provider;
         state.provider_popup = None;
-        state.provider_cursor = 0;
+        state.provider_cursor = 1; // 第一个 provider（title=0）
 
         state.handle_provider_key(crossterm::event::KeyCode::Enter);
 
@@ -3803,35 +3825,43 @@ mod tests {
         state.sidebar_subsection = SidebarSubsection::Provider;
         state.provider_cursor = 0;
 
-        // Down → cursor=1
+        // Down → cursor=1（第一个 provider）
         state.handle_provider_key(crossterm::event::KeyCode::Down);
-        assert_eq!(state.provider_cursor, 1, "Down 应移动到第二个 provider");
+        assert_eq!(state.provider_cursor, 1, "Down 应移动到第一个 provider");
 
-        // Down → cursor=2
+        // Down → cursor=2（第二个 provider）
         state.handle_provider_key(crossterm::event::KeyCode::Down);
-        assert_eq!(state.provider_cursor, 2, "Down 应移动到第三个 provider");
+        assert_eq!(state.provider_cursor, 2, "Down 应移动到第二个 provider");
 
-        // Down → cursor=3 (add provider row)
+        // Down → cursor=3（第三个 provider）
         state.handle_provider_key(crossterm::event::KeyCode::Down);
-        assert_eq!(state.provider_cursor, 3, "Down 应到 add provider 行");
+        assert_eq!(state.provider_cursor, 3, "Down 应移动到第三个 provider");
 
-        // Down → stays at 3 (end of list)
+        // Down → cursor=4（add provider row）
         state.handle_provider_key(crossterm::event::KeyCode::Down);
-        assert_eq!(state.provider_cursor, 3, "Down 在末尾不应越界");
+        assert_eq!(state.provider_cursor, 4, "Down 应到 add provider 行");
+
+        // Down → stays at 4（end of list）
+        state.handle_provider_key(crossterm::event::KeyCode::Down);
+        assert_eq!(state.provider_cursor, 4, "Down 在末尾不应越界");
+
+        // Up → cursor=3
+        state.handle_provider_key(crossterm::event::KeyCode::Up);
+        assert_eq!(state.provider_cursor, 3, "Up 应回到第三个");
 
         // Up → cursor=2
         state.handle_provider_key(crossterm::event::KeyCode::Up);
-        assert_eq!(state.provider_cursor, 2, "Up 应回到第三个");
+        assert_eq!(state.provider_cursor, 2, "Up 应回到第二个");
 
         // Up → cursor=1
         state.handle_provider_key(crossterm::event::KeyCode::Up);
-        assert_eq!(state.provider_cursor, 1, "Up 应回到第二个");
+        assert_eq!(state.provider_cursor, 1, "Up 应回到第一个");
 
-        // Up → cursor=0
+        // Up → cursor=0（title）
         state.handle_provider_key(crossterm::event::KeyCode::Up);
-        assert_eq!(state.provider_cursor, 0, "Up 应回到第一个");
+        assert_eq!(state.provider_cursor, 0, "Up 应回到 title");
 
-        // Up → stays at 0 (start of list)
+        // Up → stays at 0（start of list）
         state.handle_provider_key(crossterm::event::KeyCode::Up);
         assert_eq!(state.provider_cursor, 0, "Up 在开头不应越界");
     }
@@ -3871,9 +3901,13 @@ mod tests {
         state.sidebar_subsection = SidebarSubsection::Model;
         state.model_cursor = 0;
 
-        // Down 选择第二个 model
+        // Down → 第一个 model
         state.handle_model_key(crossterm::event::KeyCode::Down);
-        assert_eq!(state.model_cursor, 1, "Down 应移动到第二个 model");
+        assert_eq!(state.model_cursor, 1, "Down 应移动到第一个 model");
+
+        // Down → 选择第二个 model
+        state.handle_model_key(crossterm::event::KeyCode::Down);
+        assert_eq!(state.model_cursor, 2, "Down 应移动到第二个 model");
 
         // Enter 选中 model
         state.handle_model_key(crossterm::event::KeyCode::Enter);
@@ -3919,7 +3953,7 @@ mod tests {
         }];
         state.focus_panel = FocusPanel::Sidebar;
         state.sidebar_subsection = SidebarSubsection::Model;
-        state.model_cursor = 1; // 光标在 m2 (未选中)
+        state.model_cursor = 2; // 光标在 m2（未选中，title=0, m1=1, m2=2）
 
         state.handle_model_key(crossterm::event::KeyCode::Char(' '));
         assert_eq!(state.current_model, "m2", "Space 应切换到 m2");
@@ -3951,7 +3985,7 @@ mod tests {
         }];
         state.focus_panel = FocusPanel::Sidebar;
         state.sidebar_subsection = SidebarSubsection::Model;
-        state.model_cursor = 0; // 光标在 m1 (已选中)
+        state.model_cursor = 1; // 光标在 m1（已选中，title=0, m1=1）
 
         state.handle_model_key(crossterm::event::KeyCode::Char(' '));
         assert_eq!(state.current_model, "", "Space 应取消选中");
@@ -4002,7 +4036,7 @@ mod tests {
         ];
         state.focus_panel = FocusPanel::Sidebar;
         state.sidebar_subsection = SidebarSubsection::Model;
-        state.model_cursor = 0;
+        state.model_cursor = 1; // 第一个 model（title=0）
         // 当前在 deepseek Provider (索引 1) 的 MODEL 区
         state.active_provider_idx = Some(1);
         state.current_model = "shared-model".into();
@@ -4061,7 +4095,7 @@ mod tests {
         ];
         state.focus_panel = FocusPanel::Sidebar;
         state.sidebar_subsection = SidebarSubsection::Model;
-        state.model_cursor = 0;
+        state.model_cursor = 1; // 第一个 model（title=0）
         state.active_provider_idx = Some(1); // 在 Provider B
         state.current_model = "other".into();
 
@@ -4095,7 +4129,7 @@ mod tests {
         }];
         state.focus_panel = FocusPanel::Sidebar;
         state.sidebar_subsection = SidebarSubsection::Provider;
-        state.provider_cursor = 0;
+        state.provider_cursor = 1; // 第一个 provider（title=0）
 
         state.handle_provider_key(crossterm::event::KeyCode::Char(' '));
         assert_eq!(state.active_provider_idx, Some(0));
@@ -4123,7 +4157,7 @@ mod tests {
         }];
         state.focus_panel = FocusPanel::Sidebar;
         state.sidebar_subsection = SidebarSubsection::Provider;
-        state.provider_cursor = 0;
+        state.provider_cursor = 1; // 第一个 provider（title=0）
         state.active_provider_idx = Some(0);
         state.current_model = "m1".into();
 
@@ -4174,13 +4208,13 @@ mod tests {
         state.sidebar_subsection = SidebarSubsection::Provider;
 
         // Space 切换 Provider A
-        state.provider_cursor = 0;
+        state.provider_cursor = 1; // 第一个 provider（title=0）
         state.handle_provider_key(crossterm::event::KeyCode::Char(' '));
         assert_eq!(state.active_provider_idx, Some(0));
         assert_eq!(state.current_model, "ma");
 
         // 切换到 Provider B
-        state.provider_cursor = 1;
+        state.provider_cursor = 2; // 第二个 provider
         state.handle_provider_key(crossterm::event::KeyCode::Char(' '));
         assert_eq!(
             state.active_provider_idx,

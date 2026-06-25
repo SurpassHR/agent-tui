@@ -34,16 +34,21 @@ pub struct Sidebar {
     pub workspaces: Vec<WorkspaceNode>,
     // 焦点与导航
     pub has_focus: bool,
+    /// 工作区树选中光标（0 = WORKSPACE title, 1..=N = 树节点）
     pub cursor: usize,
     /// 当前聚焦的子区
     pub subsection: SidebarSubsection,
+    /// 活跃会话区选中光标（0 = ACTIVE SESSION title）
+    pub active_session_cursor: usize,
     /// 选区状态（由 tui.rs 在每帧渲染前写入）
     pub selection: SelectionState,
     // Provider 路由数据
     pub providers: Vec<crate::provider::ProviderInfo>,
     pub router_running: bool,
     pub current_model: String,
+    /// Provider 选中光标（0 = PROVIDER title, 1..=N = provider 列表项，N+1 = [+] add）
     pub provider_cursor: usize,
+    /// Model 选中光标（0 = MODEL title, 1..=N = model 列表项）
     pub model_cursor: usize,
     /// MODEL 子区搜索文本
     pub model_search: String,
@@ -67,6 +72,7 @@ impl Default for Sidebar {
             has_focus: false,
             cursor: 0,
             subsection: SidebarSubsection::Workspace,
+            active_session_cursor: 0,
             selection: SelectionState::default(),
             providers: Vec::new(),
             router_running: false,
@@ -87,6 +93,7 @@ const FOOTER_LINES: u16 = 8;
 
 impl Sidebar {
     /// 计算工作区的滚动偏移，使光标保持在可见区域内
+    /// cursor 0 = WORKSPACE title（滚动到顶），1..=N = 树节点
     fn compute_ws_scroll(
         workspaces: &[WorkspaceNode],
         cursor: usize,
@@ -97,12 +104,14 @@ impl Sidebar {
         if !has_focus || ws_total <= ws_avail {
             return 0;
         }
+        // title 行始终在最顶部
+        if cursor == 0 {
+            return 0;
+        }
+        let cursor = cursor - 1; // 去掉 title 偏移
 
         // 计算光标在完整内容中的行位置
         let mut cursor_line: usize = 0;
-        // 不计入 "工作区" 标题行（ws_total 包含它，但 cursor_line 从内容开始）
-        // 第 0 行是 "工作区" 标题，光标实际内容从第 1 行开始
-        // 但我们用 flat_idx 计数时已经跳过标题，所以这里 +1 对齐
         let mut flat_idx = 0;
         for ws in workspaces {
             if flat_idx == cursor {
@@ -165,7 +174,7 @@ impl Sidebar {
             ws_count += 1;
             sess_count += ws.sessions.len();
 
-            let is_header = self.has_focus && self.cursor == flat_idx;
+            let is_header = self.has_focus && self.cursor == flat_idx + 1;
             flat_idx += 1;
 
             let chevron = if ws.expanded { "▼ " } else { "▶ " };
@@ -189,7 +198,7 @@ impl Sidebar {
             // 展开的 sessions
             if ws.expanded {
                 for (si, session) in ws.sessions.iter().enumerate() {
-                    let is_sess = self.has_focus && self.cursor == flat_idx;
+                    let is_sess = self.has_focus && self.cursor == flat_idx + 1;
                     flat_idx += 1;
 
                     let prefix = if si == ws.sessions.len() - 1 {
@@ -263,7 +272,21 @@ impl Sidebar {
             " ◇ 离线".to_string()
         };
         let is_on_providers = focused_on_providers;
-        let p_title = if is_on_providers {
+        let provider_selected = is_on_providers && self.provider_cursor == 0;
+        let p_title = if provider_selected {
+            Line::from(vec![
+                "▎".to_string().fg(theme.accent),
+                format!("PROVIDER ({})", self.providers.len())
+                    .fg(theme.accent)
+                    .bold(),
+                Span::from(status).fg(if self.router_running {
+                    theme.success
+                } else {
+                    theme.text_dim
+                }),
+            ])
+            .style(Style::default().bg(theme.highlight_bg))
+        } else if is_on_providers {
             Line::from(vec![
                 "▎".to_string().fg(theme.accent),
                 format!("PROVIDER ({})", self.providers.len())
@@ -290,8 +313,8 @@ impl Sidebar {
         lines.push(p_title);
 
         if self.providers.is_empty() {
-            // Empty state: first item is "add provider" action
-            if is_on_providers {
+            // Empty state: title at cursor 0, add button at cursor 1
+            if is_on_providers && self.provider_cursor == 1 {
                 lines.push(
                     Line::from(Span::from("  ◆ [+] add provider").fg(theme.selection_fg))
                         .style(ratatui::style::Style::default().bg(theme.highlight_bg)),
@@ -304,7 +327,7 @@ impl Sidebar {
         } else {
             for (i, p) in self.providers.iter().enumerate() {
                 let is_active = self.active_provider_idx == Some(i);
-                let is_provider_selected = is_on_providers && i == self.provider_cursor;
+                let is_provider_selected = is_on_providers && i + 1 == self.provider_cursor;
                 let (fg, bg) = if is_provider_selected {
                     (theme.selection_fg, theme.highlight_bg)
                 } else if is_active && p.enabled {
@@ -330,7 +353,8 @@ impl Sidebar {
                 );
             }
 
-            let is_add_selected = is_on_providers && self.provider_cursor == self.providers.len();
+            let is_add_selected =
+                is_on_providers && self.provider_cursor == self.providers.len() + 1;
             let (fg, bg, prefix) = if is_add_selected {
                 (theme.selection_fg, theme.highlight_bg, "◆")
             } else {
@@ -362,7 +386,15 @@ impl Sidebar {
             ]));
 
             let is_on_models = focused_on_models;
-            let m_title = if is_on_models {
+            let model_selected = is_on_models && self.model_cursor == 0;
+            let m_title = if model_selected {
+                Line::from(vec![
+                    "▎".to_string().fg(theme.accent),
+                    format!("MODEL  {}", ap.id).fg(theme.accent).bold(),
+                    Span::from(format!("  {} models", ap.models.len())).fg(theme.text_dim),
+                ])
+                .style(Style::default().bg(theme.highlight_bg))
+            } else if is_on_models {
                 Line::from(vec![
                     "▎".to_string().fg(theme.accent),
                     format!("MODEL  {}", ap.id).fg(theme.accent).bold(),
@@ -406,9 +438,13 @@ impl Sidebar {
             // 可用行数（保留一行给底栏之外的部分）
             let available = (footer_height as usize).saturating_sub(pushed);
 
-            // 计算 scroll 偏移使 cursor 可见
+            // 计算 scroll 偏移使 cursor 可见（cursor=0=title，无需滚动到模型）
             let mut scroll = self.model_scroll;
-            let cursor = self.model_cursor.min(filtered.len().saturating_sub(1));
+            let cursor = if self.model_cursor > 0 {
+                (self.model_cursor - 1).min(filtered.len().saturating_sub(1))
+            } else {
+                scroll
+            };
             if filtered.len() > available {
                 if cursor < scroll {
                     scroll = cursor;
@@ -425,7 +461,7 @@ impl Sidebar {
 
             for (vi, m) in visible.iter().enumerate() {
                 let is_model_active = self.current_model == m.id;
-                let is_model_selected = is_on_models && (scroll + vi) == self.model_cursor;
+                let is_model_selected = is_on_models && (scroll + vi + 1) == self.model_cursor;
                 let (mf, mb) = if is_model_selected {
                     (theme.selection_fg, theme.highlight_bg)
                 } else if is_model_active {
@@ -504,7 +540,16 @@ impl Component for Sidebar {
             .split(padded);
 
         // ── 顶部：活跃会话 ──
-        let top_title = if self.has_focus && self.subsection == SidebarSubsection::ActiveSession {
+        let active_selected = self.has_focus
+            && self.subsection == SidebarSubsection::ActiveSession
+            && self.active_session_cursor == 0;
+        let top_title = if active_selected {
+            Line::from(vec![
+                "▎".to_string().fg(theme.accent),
+                "ACTIVE SESSION".to_string().fg(theme.accent).bold(),
+            ])
+            .style(Style::default().bg(theme.highlight_bg))
+        } else if self.has_focus && self.subsection == SidebarSubsection::ActiveSession {
             Line::from(vec![
                 "▎".to_string().fg(theme.accent),
                 "ACTIVE SESSION".to_string().fg(theme.accent).bold(),
@@ -516,7 +561,15 @@ impl Component for Sidebar {
 
         // ── 中部：工作区树（带内部滚动） ──
         let mut ws_lines: Vec<Line<'static>> = Vec::new();
-        let ws_title = if self.has_focus && self.subsection == SidebarSubsection::Workspace {
+        let ws_selected =
+            self.has_focus && self.subsection == SidebarSubsection::Workspace && self.cursor == 0;
+        let ws_title = if ws_selected {
+            Line::from(vec![
+                "▎".to_string().fg(theme.accent),
+                "WORKSPACE".to_string().fg(theme.accent).bold(),
+            ])
+            .style(Style::default().bg(theme.highlight_bg))
+        } else if self.has_focus && self.subsection == SidebarSubsection::Workspace {
             Line::from(vec![
                 "▎".to_string().fg(theme.accent),
                 "WORKSPACE".to_string().fg(theme.accent).bold(),

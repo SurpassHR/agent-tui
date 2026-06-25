@@ -1172,6 +1172,20 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                             app.tui.confirm_delete = None;
                         }
 
+                        // ── Sidebar + ActiveSession 子区：↑/↓（仅 title 可选中）──
+                        _ if *focus == crate::app::FocusPanel::Sidebar
+                            && app.tui.sidebar_subsection
+                                == crate::app::SidebarSubsection::ActiveSession =>
+                        {
+                            match key.code {
+                                crossterm::event::KeyCode::Up
+                                | crossterm::event::KeyCode::Down => {
+                                    // 仅 title 可选中（cursor 始终为 0），待后续增加触发动作
+                                }
+                                _ => {}
+                            }
+                        }
+
                         // ── Sidebar + Workspace 子区：↑/↓/Enter ──
                         _ if *focus == crate::app::FocusPanel::Sidebar
                             && app.tui.sidebar_subsection
@@ -1572,14 +1586,14 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                             }
                         }
 
-                        // ── AgentPanel + Agents 子区：↑/↓ 选择 subagent ──
+                        // ── AgentPanel + Agents 子区：↑/↓ 选择（0=title, 1..=total=列表）──
                         _ if *focus == crate::app::FocusPanel::AgentPanel
                             && app.tui.agent_panel_subsection
                                 == crate::app::AgentPanelSubsection::Agents =>
                         {
                             let total = app.tui.subagents.len();
                             match key.code {
-                                crossterm::event::KeyCode::Up if total > 0 => {
+                                crossterm::event::KeyCode::Up => {
                                     let cur = app.tui.agent_cursor;
                                     if cur > 0 {
                                         app.tui.agent_cursor = cur - 1;
@@ -1587,7 +1601,7 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                                 }
                                 crossterm::event::KeyCode::Down if total > 0 => {
                                     let cur = app.tui.agent_cursor;
-                                    if cur + 1 < total {
+                                    if cur < total {
                                         app.tui.agent_cursor = cur + 1;
                                     }
                                 }
@@ -1595,7 +1609,7 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                             }
                         }
 
-                        // ── AgentPanel + Skills 子区：↑/↓ 选择 skill ──
+                        // ── AgentPanel + Skills 子区：↑/↓ 选择（0=title, 1..=total=列表）──
                         _ if *focus == crate::app::FocusPanel::AgentPanel
                             && app.tui.agent_panel_subsection
                                 == crate::app::AgentPanelSubsection::Skills =>
@@ -1603,7 +1617,7 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                             let total = app.tui.skills.len();
                             let display_max = 6usize;
                             match key.code {
-                                crossterm::event::KeyCode::Up if total > 0 => {
+                                crossterm::event::KeyCode::Up => {
                                     let cur = app.tui.skill_cursor;
                                     if cur > 0 {
                                         app.tui.skill_cursor = cur - 1;
@@ -1611,7 +1625,8 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                                 }
                                 crossterm::event::KeyCode::Down if total > 0 => {
                                     let cur = app.tui.skill_cursor;
-                                    if cur + 1 < total && cur + 1 < display_max {
+                                    let max = total.min(display_max);
+                                    if cur < max {
                                         app.tui.skill_cursor = cur + 1;
                                     }
                                 }
@@ -1619,14 +1634,14 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                             }
                         }
 
-                        // ── AgentPanel + Mcps 子区：↑/↓ 选择 MCP server ──
+                        // ── AgentPanel + Mcps 子区：↑/↓ 选择（0=title, 1..=total=列表）──
                         _ if *focus == crate::app::FocusPanel::AgentPanel
                             && app.tui.agent_panel_subsection
                                 == crate::app::AgentPanelSubsection::Mcps =>
                         {
                             let total = app.tui.mcps.len();
                             match key.code {
-                                crossterm::event::KeyCode::Up if total > 0 => {
+                                crossterm::event::KeyCode::Up => {
                                     let cur = app.tui.mcp_cursor;
                                     if cur > 0 {
                                         app.tui.mcp_cursor = cur - 1;
@@ -1634,7 +1649,7 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                                 }
                                 crossterm::event::KeyCode::Down if total > 0 => {
                                     let cur = app.tui.mcp_cursor;
-                                    if cur + 1 < total {
+                                    if cur < total {
                                         app.tui.mcp_cursor = cur + 1;
                                     }
                                 }
