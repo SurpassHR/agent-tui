@@ -2002,12 +2002,18 @@ impl App {
                 if let Some(ws) = self.tui.workspaces.get(workspace_index) {
                     if let Some(sess) = ws.sessions.get(session_index) {
                         let old_name = sess.name.clone();
+                        let session_id = sess.id.clone();
                         // 仅更新数据模型中的名称（不修改 JSONL 文件内容）
                         if let Some(w) = self.tui.workspaces.get_mut(workspace_index) {
                             if let Some(s) = w.sessions.get_mut(session_index) {
                                 s.name = new_name.clone();
                             }
                         }
+                        // 持久化自定义名称，重启后恢复
+                        self.tui
+                            .session_names
+                            .insert(session_id, new_name.clone());
+                        crate::persistence::save(&self.build_persist_state());
                         self.sync_components();
                         self.tui.bottom_bar.status = format!("「{}」→「{}」", old_name, new_name);
                     }
@@ -3064,6 +3070,15 @@ impl App {
     /// 无 JSONL 或无法提取 cwd 的目录不显示。同名末端目录自动加父级区分。
     /// 已有工作区的展开状态在重建时保留。
     pub fn populate_workspaces(&mut self) {
+        // 先从 state.json 加载自定义 session 名称映射，
+        // 确保上次改名后的名称在重建工作区时生效
+        // （restore_persisted_state 在此之后调用，但 populate_workspaces
+        // 需要 session_names 来决定每个 session 的显示名）
+        if self.tui.session_names.is_empty() {
+            let state = crate::persistence::load();
+            self.tui.session_names = state.session_names;
+        }
+
         let sessions_dir = pi_sessions_dir();
         let mut ws_map: std::collections::HashMap<String, WorkspaceNode> =
             std::collections::HashMap::new();
