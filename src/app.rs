@@ -380,7 +380,7 @@ pub fn pad_value(value: &str, width: usize) -> String {
 
 /// 编辑表单视觉焦点顺序：端点类型 → ID → 名称 → Base URL → API Key → 模型 → 桥接
 const FIELD_ORDER: [usize; 7] = [6, 0, 1, 2, 3, 5, 4];
-// 6=endpoint_type, 0=ID, 1=name, 2=base_url, 3=api_key, 5=models, 4=bridge
+// 6=endpoint_type, 0=ID, 1=name, 2=base_url, 3=api_key, 5=models
 
 fn prev_field(current: usize) -> usize {
     if let Some(pos) = FIELD_ORDER.iter().position(|&f| f == current) {
@@ -541,7 +541,6 @@ impl TuiState {
                                 id: String::new(),
                                 name: String::new(),
                                 enabled: true,
-                                bridge: false,
                                 base_url: String::new(),
                                 api_key: String::new(),
                                 models: vec![],
@@ -608,7 +607,6 @@ impl TuiState {
                         id: "new-provider".into(),
                         name: "New Provider".into(),
                         enabled: true,
-                        bridge: false,
                         base_url: "https://api.openai.com/v1".into(),
                         api_key: String::new(),
                         endpoint_type: "openai_compat".into(),
@@ -797,17 +795,10 @@ impl TuiState {
             KeyCode::Tab => {
                 if let Some(ref mut editor) = self.provider_editor {
                     let old = editor.field_focus;
-                    let mut new = next_field(old);
-                    // bridge=true 时跳过字段 6（端点类型）
-                    if editor.draft.bridge {
-                        while new == 6 {
-                            new = next_field(new);
-                        }
-                    }
+                    let new = next_field(old);
                     editor.field_focus = new;
                     if old == 3
                         && new != 3
-                        && !editor.draft.bridge
                         && !editor.draft.base_url.trim().is_empty()
                         && !editor.draft.api_key.trim().is_empty()
                         && !editor.models_fetching
@@ -861,9 +852,7 @@ impl TuiState {
             }
             KeyCode::Char(' ') => {
                 if let Some(ref mut editor) = self.provider_editor {
-                    if editor.field_focus == 4 {
-                        editor.draft.bridge = !editor.draft.bridge;
-                    } else if editor.field_focus == 6 {
+                    if editor.field_focus == 6 {
                         // 端点类型循环切换
                         editor.draft.endpoint_type = match editor.draft.endpoint_type.as_str() {
                             "openai_responses" => "anthropic_messages".into(),
@@ -906,7 +895,7 @@ impl TuiState {
                         3 => {
                             editor.draft.api_key.push(c);
                         }
-                        4..=6 => {}
+                        5..=6 => {}
                         _ => {}
                     }
                 }
@@ -915,16 +904,10 @@ impl TuiState {
             KeyCode::Up => {
                 if let Some(ref mut editor) = self.provider_editor {
                     let old = editor.field_focus;
-                    let mut new = prev_field(old);
-                    if editor.draft.bridge {
-                        while new == 6 {
-                            new = prev_field(new);
-                        }
-                    }
+                    let new = prev_field(old);
                     editor.field_focus = new;
                     if old == 3
                         && new != 3
-                        && !editor.draft.bridge
                         && !editor.draft.base_url.trim().is_empty()
                         && !editor.draft.api_key.trim().is_empty()
                         && !editor.models_fetching
@@ -937,16 +920,10 @@ impl TuiState {
             KeyCode::Down => {
                 if let Some(ref mut editor) = self.provider_editor {
                     let old = editor.field_focus;
-                    let mut new = next_field(old);
-                    if editor.draft.bridge {
-                        while new == 6 {
-                            new = next_field(new);
-                        }
-                    }
+                    let new = next_field(old);
                     editor.field_focus = new;
                     if old == 3
                         && new != 3
-                        && !editor.draft.bridge
                         && !editor.draft.base_url.trim().is_empty()
                         && !editor.draft.api_key.trim().is_empty()
                         && !editor.models_fetching
@@ -2215,8 +2192,7 @@ impl App {
                 f.render_widget(ratatui::widgets::Clear, popup_area);
                 let block = ratatui::widgets::Block::default()
                     .title(format!(
-                        " {} {} ",
-                        if p.bridge { "\u{1f517}" } else { "\u{25c6}" },
+                        " ◆ {} ",
                         p.name
                     ))
                     .borders(ratatui::widgets::Borders::ALL)
@@ -2232,10 +2208,6 @@ impl App {
                 ln.push(Line::from(vec![
                     Span::from("  Base URL ").fg(theme.text_dim),
                     Span::from(p.base_url.clone()).fg(theme.text_dim),
-                ]));
-                ln.push(Line::from(vec![
-                    Span::from("  mode     ").fg(theme.text_dim),
-                    Span::from(if p.bridge { "bridge" } else { "standard" }).fg(theme.accent),
                 ]));
                 ln.push(Line::from(vec![
                     Span::from("  endpoint ").fg(theme.text_dim),
@@ -2289,7 +2261,6 @@ impl App {
                 } else {
                     format!(" {} 编辑 Provider ", icon)
                 };
-                let is_std = !editor.draft.bridge;
 
                 let mask_secret = |value: &str, width: usize| -> String {
                     if value.is_empty() {
@@ -2313,60 +2284,28 @@ impl App {
                     } else {
                         "  端点类型".to_string()
                     };
-                    let disabled = editor.draft.bridge;
                     ln.push(Line::from(
                         Span::from(ep_label)
                             .fg(if f_ep { theme.accent } else { theme.text_dim })
                             .bold(),
                     ));
-                    if disabled {
+                    let opts = [
+                        ("openai_compat", "OpenAI 兼容"),
+                        ("openai_responses", "OpenAI Responses"),
+                        ("anthropic_messages", "Anthropic Messages"),
+                        ("gemini", "Gemini"),
+                    ];
+                    for (val, label) in &opts {
+                        let selected = *val == editor.draft.endpoint_type;
+                        let (marker, fg) = if selected {
+                            ("◆", theme.accent)
+                        } else {
+                            ("○", theme.text_dim)
+                        };
                         ln.push(Line::from(
-                            Span::from(format!(
-                                "  {} （桥接模式）",
-                                editor.draft.endpoint_type
-                            ))
-                            .fg(theme.border_dim),
+                            Span::from(format!("    {} {}", marker, label)).fg(fg),
                         ));
-                    } else {
-                        let opts = [
-                            ("openai_compat", "OpenAI 兼容"),
-                            ("openai_responses", "OpenAI Responses"),
-                            ("anthropic_messages", "Anthropic Messages"),
-                            ("gemini", "Gemini"),
-                        ];
-                        for (val, label) in &opts {
-                            let selected = *val == editor.draft.endpoint_type;
-                            let (marker, fg) = if selected {
-                                ("◆", theme.accent)
-                            } else {
-                                ("○", theme.text_dim)
-                            };
-                            ln.push(Line::from(
-                                Span::from(format!("    {} {}", marker, label)).fg(fg),
-                            ));
-                        }
                     }
-                }
-
-                // ── 桥接模式开关 ──
-                {
-                    let f_br = editor.field_focus == 4;
-                    let br_label = if f_br {
-                        " ▎桥接模式".to_string()
-                    } else {
-                        "  桥接模式".to_string()
-                    };
-                    let (marker, fg) = if editor.draft.bridge {
-                        ("[✓]", theme.success)
-                    } else {
-                        ("[ ]", theme.text_dim)
-                    };
-                    ln.push(Line::from(vec![
-                        Span::from(br_label)
-                            .fg(if f_br { theme.accent } else { theme.text_dim })
-                            .bold(),
-                        Span::from(format!("  {} 启用", marker)).fg(fg),
-                    ]));
                 }
 
                 // 分隔线
@@ -2382,9 +2321,6 @@ impl App {
                     (3, "API Key", true),
                 ];
                 for &(fi, label, secret) in &field_defs {
-                    if secret && !is_std {
-                        continue;
-                    }
                     let f = editor.field_focus == fi;
                     let raw = match fi {
                         0 => editor.draft.id.as_str(),
@@ -2509,7 +2445,6 @@ impl App {
                 ));
                 let hint_text = match editor.field_focus {
                     6 => "  [Space] 切换端点类型",
-                    4 => "  [Space] 切换桥接",
                     _ => "",
                 };
                 ln.push(Line::from(vec![
@@ -3862,7 +3797,6 @@ mod tests {
             id: "deepseek".into(),
             name: "DeepSeek".into(),
             enabled: true,
-            bridge: false,
             base_url: "https://api.deepseek.com/v1".into(),
             api_key: "sk-test".into(),
             models: vec![crate::provider::ModelInfo {
@@ -3917,7 +3851,6 @@ mod tests {
             id: "deepseek".into(),
             name: "DeepSeek".into(),
             enabled: true,
-            bridge: false,
             base_url: "https://api.deepseek.com/v1".into(),
             api_key: "sk-test".into(),
             models: vec![],
@@ -3940,7 +3873,6 @@ mod tests {
             id: "deepseek".into(),
             name: "DeepSeek".into(),
             enabled: true,
-            bridge: false,
             base_url: "https://api.deepseek.com/v1".into(),
             api_key: "sk-test".into(),
             models: vec![crate::provider::ModelInfo {
@@ -3979,7 +3911,6 @@ mod tests {
                 id: "a".into(),
                 name: "A".into(),
                 enabled: true,
-                bridge: false,
                 base_url: "".into(),
                 api_key: "".into(),
                 models: vec![],
@@ -3989,7 +3920,6 @@ mod tests {
                 id: "b".into(),
                 name: "B".into(),
                 enabled: true,
-                bridge: false,
                 base_url: "".into(),
                 api_key: "".into(),
                 models: vec![],
@@ -3999,7 +3929,6 @@ mod tests {
                 id: "c".into(),
                 name: "C".into(),
                 enabled: true,
-                bridge: false,
                 base_url: "".into(),
                 api_key: "".into(),
                 models: vec![],
@@ -4060,7 +3989,6 @@ mod tests {
             id: "ds".into(),
             name: "DS".into(),
             enabled: true,
-            bridge: false,
             base_url: "".into(),
             api_key: "".into(),
             models: vec![
@@ -4115,7 +4043,6 @@ mod tests {
             id: "ds".into(),
             name: "DS".into(),
             enabled: true,
-            bridge: false,
             base_url: "".into(),
             api_key: "".into(),
             models: vec![
@@ -4158,7 +4085,6 @@ mod tests {
             id: "ds".into(),
             name: "DS".into(),
             enabled: true,
-            bridge: false,
             base_url: "".into(),
             api_key: "".into(),
             models: vec![crate::provider::ModelInfo {
@@ -4193,7 +4119,6 @@ mod tests {
                 id: "elysiver".into(),
                 name: "Elysiver".into(),
                 enabled: true,
-                bridge: false,
                 base_url: "".into(),
                 api_key: "".into(),
                 models: vec![crate::provider::ModelInfo {
@@ -4210,7 +4135,6 @@ mod tests {
                 id: "deepseek".into(),
                 name: "DeepSeek".into(),
                 enabled: true,
-                bridge: false,
                 base_url: "".into(),
                 api_key: "".into(),
                 models: vec![crate::provider::ModelInfo {
@@ -4254,7 +4178,6 @@ mod tests {
                 id: "a".into(),
                 name: "A".into(),
                 enabled: true,
-                bridge: false,
                 base_url: "".into(),
                 api_key: "".into(),
                 models: vec![crate::provider::ModelInfo {
@@ -4271,7 +4194,6 @@ mod tests {
                 id: "b".into(),
                 name: "B".into(),
                 enabled: true,
-                bridge: false,
                 base_url: "".into(),
                 api_key: "".into(),
                 models: vec![crate::provider::ModelInfo {
@@ -4307,7 +4229,6 @@ mod tests {
             id: "ds".into(),
             name: "DS".into(),
             enabled: true,
-            bridge: false,
             base_url: "".into(),
             api_key: "".into(),
             models: vec![crate::provider::ModelInfo {
@@ -4336,7 +4257,6 @@ mod tests {
             id: "ds".into(),
             name: "DS".into(),
             enabled: true,
-            bridge: false,
             base_url: "".into(),
             api_key: "".into(),
             models: vec![crate::provider::ModelInfo {
@@ -4369,7 +4289,6 @@ mod tests {
                 id: "a".into(),
                 name: "A".into(),
                 enabled: true,
-                bridge: false,
                 base_url: "".into(),
                 api_key: "".into(),
                 models: vec![crate::provider::ModelInfo {
@@ -4386,7 +4305,6 @@ mod tests {
                 id: "b".into(),
                 name: "B".into(),
                 enabled: true,
-                bridge: false,
                 base_url: "".into(),
                 api_key: "".into(),
                 models: vec![crate::provider::ModelInfo {
@@ -4431,7 +4349,6 @@ mod tests {
             id: "ds".into(),
             name: "DS".into(),
             enabled: true,
-            bridge: false,
             base_url: "".into(),
             api_key: "".into(),
             models: vec![crate::provider::ModelInfo {
@@ -4473,7 +4390,6 @@ mod tests {
                 id: "a".into(),
                 name: "A".into(),
                 enabled: true,
-                bridge: false,
                 base_url: "".into(),
                 api_key: "".into(),
                 models: vec![crate::provider::ModelInfo {
@@ -4490,7 +4406,6 @@ mod tests {
                 id: "b".into(),
                 name: "B".into(),
                 enabled: true,
-                bridge: false,
                 base_url: "".into(),
                 api_key: "".into(),
                 models: vec![crate::provider::ModelInfo {
@@ -4531,7 +4446,6 @@ mod tests {
                 id: "first".into(),
                 name: "First".into(),
                 enabled: true,
-                bridge: false,
                 base_url: "".into(),
                 api_key: "".into(),
                 models: vec![crate::provider::ModelInfo {
@@ -4548,7 +4462,6 @@ mod tests {
                 id: "second".into(),
                 name: "Second".into(),
                 enabled: true,
-                bridge: false,
                 base_url: "".into(),
                 api_key: "".into(),
                 models: vec![crate::provider::ModelInfo {
@@ -4578,7 +4491,6 @@ mod tests {
                 id: "a".into(),
                 name: "A".into(),
                 enabled: true,
-                bridge: false,
                 base_url: "".into(),
                 api_key: "".into(),
                 models: vec![crate::provider::ModelInfo {
@@ -4595,7 +4507,6 @@ mod tests {
                 id: "b".into(),
                 name: "B".into(),
                 enabled: true,
-                bridge: false,
                 base_url: "".into(),
                 api_key: "".into(),
                 models: vec![crate::provider::ModelInfo {
@@ -4624,7 +4535,6 @@ mod tests {
                 id: "first".into(),
                 name: "First".into(),
                 enabled: true,
-                bridge: false,
                 base_url: "".into(),
                 api_key: "".into(),
                 models: vec![crate::provider::ModelInfo {
@@ -4641,7 +4551,6 @@ mod tests {
                 id: "second".into(),
                 name: "Second".into(),
                 enabled: true,
-                bridge: false,
                 base_url: "".into(),
                 api_key: "".into(),
                 models: vec![crate::provider::ModelInfo {
@@ -4669,7 +4578,6 @@ mod tests {
             id: "p".into(),
             name: "P".into(),
             enabled: true,
-            bridge: false,
             base_url: "".into(),
             api_key: "".into(),
             models: vec![
@@ -4708,7 +4616,6 @@ mod tests {
                 id: "p0".into(),
                 name: "P0".into(),
                 enabled: true,
-                bridge: false,
                 base_url: "".into(),
                 api_key: "".into(),
                 models: vec![crate::provider::ModelInfo {
@@ -4725,7 +4632,6 @@ mod tests {
                 id: "p1".into(),
                 name: "P1".into(),
                 enabled: true,
-                bridge: false,
                 base_url: "".into(),
                 api_key: "".into(),
                 models: vec![crate::provider::ModelInfo {
@@ -4755,7 +4661,6 @@ mod tests {
             id: "ds".into(),
             name: "DS".into(),
             enabled: false,
-            bridge: false,
             base_url: "".into(),
             api_key: "".into(),
             models: vec![],

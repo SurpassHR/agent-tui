@@ -1,7 +1,6 @@
 //! Provider 路由系统 — HTTP 路由器 + 配置管理
 //!
 //! TUI 内嵌 axum HTTP 服务器，将 pi 的请求按 model 路由到对应后端。
-//! 支持标准模式（按 model 字段路由）和桥接模式（透传）。
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -40,9 +39,6 @@ pub struct ProviderInfo {
     /// 是否启用
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// 桥接模式：透传不做任何处理
-    #[serde(default)]
-    pub bridge: bool,
     /// 目标 base URL
     pub base_url: String,
     /// API key（标准模式使用）
@@ -90,7 +86,6 @@ impl Default for ProviderInfo {
             id: String::new(),
             name: String::new(),
             enabled: true,
-            bridge: false,
             base_url: String::new(),
             api_key: String::new(),
             models: Vec::new(),
@@ -153,12 +148,8 @@ impl ProviderConfig {
         }
     }
 
-    /// 获取活跃 provider（bridge 优先，否则按 current_model 匹配，跳过 disabled）
+    /// 获取活跃 provider（按 current_model 匹配，跳过 disabled）
     pub fn active_provider(&self) -> Option<&ProviderInfo> {
-        // bridge provider 优先
-        if let Some(bridge) = self.providers.iter().find(|p| p.bridge && p.enabled) {
-            return Some(bridge);
-        }
         // 按 current_model 匹配
         if let Some(ref model) = self.current_model {
             for p in &self.providers {
@@ -172,10 +163,6 @@ impl ProviderConfig {
 
     /// 根据 model id 查找 provider
     pub fn find_provider_by_model(&self, model: &str) -> Option<&ProviderInfo> {
-        // bridge 模式直接返回第一个 bridge provider
-        if let Some(bridge) = self.providers.iter().find(|p| p.bridge && p.enabled) {
-            return Some(bridge);
-        }
         self.providers
             .iter()
             .find(|p| p.models.iter().any(|m| m.id == model))

@@ -364,9 +364,6 @@ impl Sidebar {
                 if !p.endpoint_type.is_empty() && p.endpoint_type != "openai_compat" {
                     text.push_str(&format!(" [{}]", p.endpoint_type));
                 }
-                if p.bridge {
-                    text.push_str(" 🔗");
-                }
                 lines.push(
                     Line::from(vec![Span::from(text)])
                         .style(ratatui::style::Style::default().fg(fg).bg(bg)),

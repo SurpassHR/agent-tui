@@ -86,36 +86,18 @@ async fn handle_chat_completions(
     };
 
     tracing::info!(
-        "收到 POST /v1/chat/completions | provider={} mode={}",
+        "收到 POST /v1/chat/completions | provider={}",
         provider.id,
-        if provider.bridge {
-            "bridge"
-        } else {
-            "standard"
-        }
     );
 
-    if provider.bridge {
-        // 桥接模式：纯透传
-        bridge_proxy(
-            &state.http,
-            &provider.base_url,
-            "/v1/chat/completions",
-            headers,
-            body,
-        )
-        .await
-    } else {
-        // 标准模式：根据 provider endpoint_type 路由
-        standard_chat_proxy(
-            &state.http,
-            &provider,
-            headers,
-            body,
-            &config,
-        )
-        .await
-    }
+    standard_chat_proxy(
+        &state.http,
+        &provider,
+        headers,
+        body,
+        &config,
+    )
+    .await
 }
 
 /// POST /v1/responses
@@ -131,18 +113,14 @@ async fn handle_responses(
             return (StatusCode::NOT_FOUND, "{\"error\":\"no active provider\"}").into_response();
         }
     };
-    if provider.bridge {
-        bridge_proxy(&state.http, &provider.base_url, "/v1/responses", headers, body).await
-    } else {
-        standard_chat_proxy(
-            &state.http,
-            &provider,
-            headers,
-            body,
-            &config,
-        )
-        .await
-    }
+    standard_chat_proxy(
+        &state.http,
+        &provider,
+        headers,
+        body,
+        &config,
+    )
+    .await
 }
 
 /// POST /v1/messages
@@ -158,24 +136,20 @@ async fn handle_messages(
             return (StatusCode::NOT_FOUND, "{\"error\":\"no active provider\"}").into_response();
         }
     };
-    if provider.bridge {
-        bridge_proxy(&state.http, &provider.base_url, "/v1/messages", headers, body).await
-    } else {
-        standard_chat_proxy(
-            &state.http,
-            &provider,
-            headers,
-            body,
-            &config,
-        )
-        .await
-    }
+    standard_chat_proxy(
+        &state.http,
+        &provider,
+        headers,
+        body,
+        &config,
+    )
+    .await
 }
 
 /// POST /v1/models/{*path}（Gemini generateContent 等操作）
 async fn handle_gemini(
     State(state): State<Arc<AppState>>,
-    Path(path): Path<String>,
+    Path(_path): Path<String>,
     headers: HeaderMap,
     body: Body,
 ) -> Response {
@@ -186,19 +160,14 @@ async fn handle_gemini(
             return (StatusCode::NOT_FOUND, "{\"error\":\"no active provider\"}").into_response();
         }
     };
-    let path = format!("/v1/models/{}", path);
-    if provider.bridge {
-        bridge_proxy(&state.http, &provider.base_url, &path, headers, body).await
-    } else {
-        standard_chat_proxy(
-            &state.http,
-            &provider,
-            headers,
-            body,
-            &config,
-        )
-        .await
-    }
+    standard_chat_proxy(
+        &state.http,
+        &provider,
+        headers,
+        body,
+        &config,
+    )
+    .await
 }
 
 /// GET /v1/models
@@ -206,20 +175,7 @@ async fn handle_models(State(state): State<Arc<AppState>>) -> Response {
     tracing::debug!("收到 GET /v1/models");
     let config = state.config.read().await;
 
-    // 桥接模式：返回空列表（bridge 自己管理模型）
-    if config.providers.iter().any(|p| p.bridge) {
-        return (
-            StatusCode::OK,
-            [(
-                HeaderName::from_static("content-type"),
-                HeaderValue::from_static("application/json"),
-            )],
-            "{\"object\":\"list\",\"data\":[]}",
-        )
-            .into_response();
-    }
-
-    // 标准模式：聚合所有 provider 的模型
+    // 聚合所有 provider 的模型
     let mut models = Vec::new();
     for p in &config.providers {
         for m in &p.models {
@@ -246,21 +202,6 @@ async fn handle_models(State(state): State<Arc<AppState>>) -> Response {
         serde_json::to_string(&resp).unwrap_or_default(),
     )
         .into_response()
-}
-
-/// 桥接透传代理
-async fn bridge_proxy(
-    client: &Client,
-    base_url: &str,
-    path: &str,
-    _headers: HeaderMap,
-    body: Body,
-) -> Response {
-    let target_url = format!("{}{}", base_url.trim_end_matches('/'), path);
-    tracing::debug!("POST {} → bridge 透传", target_url);
-    let response = proxy_request(client, &target_url, body).await;
-    tracing::debug!("POST {} — 上游响应完成", target_url);
-    response
 }
 
 /// 标准模式代理：读 model 字段 → 匹配 provider → 根据 endpoint_type 构造目标路径 → 转发 + 注入 API key
@@ -432,57 +373,4 @@ fn rewrite_developer_to_system(bytes: Vec<u8>) -> Vec<u8> {
         }
     }
     serde_json::to_vec(&val).unwrap_or(bytes)
-}
-
-/// 通用转发（bridge 模式用）
-async fn proxy_request(client: &Client, target_url: &str, body: Body) -> Response {
-    let bytes = match axum::body::to_bytes(body, 10 * 1024 * 1024).await {
-        Ok(b) => b,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                "{\"error\":\"failed to read body\"}",
-            )
-                .into_response()
-        }
-    };
-
-    let req_builder = client
-        .post(target_url)
-        .header("Content-Type", "application/json")
-        .body(bytes.to_vec());
-
-    match req_builder.send().await {
-        Ok(resp) => {
-            let status = resp.status();
-            tracing::info!("POST {} — 上游响应 status={}", target_url, status.as_u16(),);
-            let headers = resp.headers().clone();
-            let stream = resp.bytes_stream();
-
-            let body_stream =
-                tokio_stream::StreamExt::map(stream, |chunk| chunk.map_err(std::io::Error::other));
-
-            let mut response_headers = HeaderMap::new();
-            for (key, value) in headers.iter() {
-                if key != "transfer-encoding" {
-                    response_headers.insert(key.clone(), value.clone());
-                }
-            }
-
-            (
-                status,
-                response_headers,
-                axum::body::Body::from_stream(body_stream),
-            )
-                .into_response()
-        }
-        Err(e) => {
-            tracing::error!("POST {} — 上游请求失败: {}", target_url, e);
-            (
-                StatusCode::BAD_GATEWAY,
-                format!("{{\"error\":\"upstream error: {}\"}}", e),
-            )
-                .into_response()
-        }
-    }
 }
