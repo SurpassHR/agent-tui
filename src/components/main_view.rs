@@ -48,6 +48,8 @@ pub struct MainView {
     pub line_scroll: usize,
     /// 最近一次渲染的消息行范围 [(start, end), ...]
     pub msg_line_ranges: Vec<(usize, usize)>,
+    /// 输入光标位置（字节索引，0 = 开头）
+    pub cursor_position: usize,
 }
 
 impl Default for MainView {
@@ -69,6 +71,7 @@ impl Default for MainView {
             input_rect: Rect::new(0, 0, 0, 0),
             line_scroll: 0,
             msg_line_ranges: Vec::new(),
+            cursor_position: 0,
         }
     }
 }
@@ -113,6 +116,12 @@ impl MainView {
         // 输入框
         let input_line = self.render_input_inner(theme);
         f.render_widget(Paragraph::new(input_line), input_area);
+
+        // 设置终端光标位置（仅在获得焦点且处于 Input 子区时）
+        if self.has_focus && self.subsection == MainViewSubsection::Input {
+            let col = input_area.x + Self::cursor_display_col(&self.input_buffer, self.cursor_position);
+            f.set_cursor_position(ratatui::layout::Position::new(col, input_area.y));
+        }
     }
 
     /// 渲染消息行
@@ -476,6 +485,12 @@ impl Component for MainView {
         let input_line = self.render_input_inner(theme);
         f.render_widget(Paragraph::new(input_line), input_area);
 
+        // 设置终端光标位置（仅在获得焦点且处于 Input 子区时）
+        if self.has_focus && self.subsection == MainViewSubsection::Input {
+            let col = input_area.x + Self::cursor_display_col(&self.input_buffer, self.cursor_position);
+            f.set_cursor_position(ratatui::layout::Position::new(col, input_area.y));
+        }
+
         // 存储布局矩形供鼠标滚轮命中测试
         self.messages_rect = msg_area;
         self.input_rect = input_area;
@@ -681,8 +696,8 @@ impl MainView {
     }
 
     /// 构建底部输入框内容行
+    /// 光标通过 `set_cursor_position` 定位，不渲染为文本字符
     fn render_input_inner(&self, theme: &Theme) -> Line<'static> {
-        let cursor = if self.has_focus { "█" } else { "" };
         let (prefix_style, text_style) = if self.has_focus {
             (theme.accent, theme.text)
         } else {
@@ -692,16 +707,23 @@ impl MainView {
         if self.input_buffer.is_empty() {
             Line::from(vec![
                 "> ".to_string().fg(prefix_style),
-                cursor.to_string().fg(prefix_style),
                 "输入你的问题...".to_string().fg(theme.text_dim),
             ])
         } else {
             Line::from(vec![
                 "> ".to_string().fg(prefix_style),
                 self.input_buffer.clone().fg(text_style),
-                cursor.to_string().fg(prefix_style),
             ])
         }
+    }
+
+    /// 计算终端光标应在的屏幕位置（字节坐标 → 显示宽度坐标）
+    /// 返回相对输入区域的 (col_offset, _row) 列偏移
+    pub fn cursor_display_col(input_buffer: &str, cursor_byte_pos: usize) -> u16 {
+        use unicode_width::UnicodeWidthStr;
+        let before_cursor = &input_buffer[..cursor_byte_pos.min(input_buffer.len())];
+        // "> " 前缀占 2 列
+        2u16 + UnicodeWidthStr::width(before_cursor) as u16
     }
 }
 

@@ -527,6 +527,7 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
     let agent_id = app.active_agent.clone().unwrap_or_default();
     tracing::info!("TUI 主循环开始，active_agent={:?}", agent_id);
     let mut input_buffer = String::new();
+    let mut cursor_position: usize = 0;
 
     // 焦点状态由 App 通过 focus_panel 管理
     app.tui.main_view.has_focus = true;
@@ -547,6 +548,7 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
             _ = ticker.tick() => {
                 // 同步输入缓冲区到 main_view
                 app.tui.main_view.input_buffer.clone_from(&input_buffer);
+                app.tui.main_view.cursor_position = cursor_position;
                 // 检查模型列表拉取结果
                 if let Some(mut rx) = app.tui.models_fetch_rx.take() {
                     match rx.try_recv() {
@@ -1632,21 +1634,126 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                             }
                         }
 
-                        // ── MainView + Input 子区：↑ 切换到 Messages ──
+                        // ── MainView + Input 子区：键盘输入处理 ──
                         _ if *focus == crate::app::FocusPanel::MainView
                             && app.tui.main_view_subsection
                                 == crate::app::MainViewSubsection::Input =>
                         {
+                            // ── 辅助函数：字符边界导航 ──
+                            // 左移一个字符（UTF-8 安全）
+                            fn char_left(s: &str, pos: usize) -> usize {
+                                if pos == 0 { return 0; }
+                                let mut p = pos - 1;
+                                while p > 0 && !s.is_char_boundary(p) {
+                                    p -= 1;
+                                }
+                                p
+                            }
+                            // 右移一个字符（UTF-8 安全）
+                            fn char_right(s: &str, pos: usize) -> usize {
+                                if pos >= s.len() { return s.len(); }
+                                let mut p = pos + 1;
+                                while p < s.len() && !s.is_char_boundary(p) {
+                                    p += 1;
+                                }
+                                p
+                            }
+                            // 左移一个词
+                            fn word_left(s: &str, pos: usize) -> usize {
+                                let mut p = pos;
+                                // 跳过当前空白
+                                while p > 0 {
+                                    let prev = char_left(s, p);
+                                    if s[prev..p].chars().all(|c| c.is_whitespace()) {
+                                        p = prev;
+                                    } else {
+                                        break;
+                                    }
+                                }
+                                // 跳到词首
+                                while p > 0 {
+                                    let prev = char_left(s, p);
+                                    if s[prev..p].chars().all(|c| !c.is_whitespace()) {
+                                        p = prev;
+                                    } else {
+                                        break;
+                                    }
+                                }
+                                p
+                            }
+                            // 右移一个词
+                            fn word_right(s: &str, pos: usize) -> usize {
+                                let mut p = pos;
+                                // 跳过当前词
+                                while p < s.len() {
+                                    let next = char_right(s, p);
+                                    if s[p..next].chars().all(|c| !c.is_whitespace()) {
+                                        p = next;
+                                    } else {
+                                        break;
+                                    }
+                                }
+                                // 跳过空白
+                                while p < s.len() {
+                                    let next = char_right(s, p);
+                                    if s[p..next].chars().all(|c| c.is_whitespace()) {
+                                        p = next;
+                                    } else {
+                                        break;
+                                    }
+                                }
+                                p
+                            }
+
+                            let modifiers = key.modifiers;
+                            let ctrl = modifiers.contains(crossterm::event::KeyModifiers::CONTROL);
+                            let alt = modifiers.contains(crossterm::event::KeyModifiers::ALT);
+                            let no_mod = !ctrl && !alt;
+
                             match key.code {
-                                crossterm::event::KeyCode::Up => {
+                                // ↑ 切换到 Messages
+                                crossterm::event::KeyCode::Up if no_mod => {
                                     app.tui.main_view_subsection =
                                         crate::app::MainViewSubsection::Messages;
                                 }
+                                // ↓ 暂不处理
+                                crossterm::event::KeyCode::Down if no_mod => {}
+
+                                // ← 光标左移
+                                crossterm::event::KeyCode::Left
+                                    if ctrl || alt =>
+                                {
+                                    cursor_position = word_left(&input_buffer, cursor_position);
+                                }
+                                crossterm::event::KeyCode::Left if no_mod => {
+                                    cursor_position =
+                                        char_left(&input_buffer, cursor_position);
+                                }
+                                // → 光标右移
+                                crossterm::event::KeyCode::Right
+                                    if ctrl || alt =>
+                                {
+                                    cursor_position = word_right(&input_buffer, cursor_position);
+                                }
+                                crossterm::event::KeyCode::Right if no_mod => {
+                                    cursor_position =
+                                        char_right(&input_buffer, cursor_position);
+                                }
+                                // Home: 跳到行首
+                                crossterm::event::KeyCode::Home => {
+                                    cursor_position = 0;
+                                }
+                                // End: 跳到行尾
+                                crossterm::event::KeyCode::End => {
+                                    cursor_position = input_buffer.len();
+                                }
+
                                 // / 触发命令补全（仅输入框为空时）
                                 crossterm::event::KeyCode::Char('/')
                                     if input_buffer.is_empty() =>
                                 {
                                     input_buffer.push('/');
+                                    cursor_position = 1;
                                     app.tui.main_view.completion_popup = Some(
                                         crate::message::CompletionPopup {
                                             items: vec![
@@ -1668,8 +1775,10 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                                     );
                                 }
                                 // @ 触发文件补全
-                                crossterm::event::KeyCode::Char('@') => {
-                                    input_buffer.push('@');
+                                crossterm::event::KeyCode::Char('@') if no_mod => {
+                                    let cp = cursor_position;
+                                    input_buffer.insert(cp, '@');
+                                    cursor_position = cp + 1;
                                     app.tui.main_view.completion_popup = Some(
                                         crate::message::CompletionPopup {
                                             items: vec![
@@ -1704,11 +1813,13 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                                     {
                                         if let Some(item) = popup.items.get(popup.cursor) {
                                             input_buffer = item.value.clone();
+                                            cursor_position = input_buffer.len();
                                         }
                                     } else {
                                         let trimmed = input_buffer.trim().to_string();
                                         if !trimmed.is_empty() {
                                             input_buffer.clear();
+                                            cursor_position = 0;
                                             app.handle_action(Action::UserSubmitInput(
                                                 trimmed.clone(),
                                             ))
@@ -1739,17 +1850,108 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                                         }
                                     }
                                 }
-                                // Backspace: 删除字符，清空时关闭 popup
-                                crossterm::event::KeyCode::Backspace => {
-                                    input_buffer.pop();
+
+                                // Backspace (无修饰键): 删除光标前一个字符
+                                crossterm::event::KeyCode::Backspace
+                                    if cursor_position > 0 && ctrl && !alt =>
+                                {
+                                    let wp = word_left(&input_buffer, cursor_position);
+                                    input_buffer.drain(wp..cursor_position);
+                                    cursor_position = wp;
                                     if input_buffer.is_empty() {
                                         app.tui.main_view.completion_popup = None;
                                     }
                                 }
-                                // 通用字符输入
-                                crossterm::event::KeyCode::Char(c) => {
-                                    input_buffer.push(c);
+                                crossterm::event::KeyCode::Backspace
+                                    if cursor_position > 0 && alt && !ctrl =>
+                                {
+                                    let wp = word_left(&input_buffer, cursor_position);
+                                    input_buffer.drain(wp..cursor_position);
+                                    cursor_position = wp;
+                                    if input_buffer.is_empty() {
+                                        app.tui.main_view.completion_popup = None;
+                                    }
                                 }
+                                crossterm::event::KeyCode::Backspace
+                                    if cursor_position > 0 && no_mod =>
+                                {
+                                    let prev = char_left(&input_buffer, cursor_position);
+                                    input_buffer.drain(prev..cursor_position);
+                                    cursor_position = prev;
+                                    if input_buffer.is_empty() {
+                                        app.tui.main_view.completion_popup = None;
+                                    }
+                                }
+
+                                // Delete (无修饰键): 删除光标后一个字符
+                                crossterm::event::KeyCode::Delete
+                                    if ctrl || alt =>
+                                {
+                                    let wp = word_right(&input_buffer, cursor_position);
+                                    if wp > cursor_position {
+                                        input_buffer.drain(cursor_position..wp);
+                                    }
+                                }
+                                crossterm::event::KeyCode::Delete if no_mod => {
+                                    if cursor_position < input_buffer.len() {
+                                        let next =
+                                            char_right(&input_buffer, cursor_position);
+                                        input_buffer.drain(cursor_position..next);
+                                    }
+                                }
+
+                                // 通用字符输入（带修饰键）
+                                crossterm::event::KeyCode::Char(c) if ctrl && !alt => {
+                                    // Ctrl+A: 跳到行首
+                                    if c == 'a' {
+                                        cursor_position = 0;
+                                    }
+                                    // Ctrl+E: 跳到行尾
+                                    if c == 'e' {
+                                        cursor_position = input_buffer.len();
+                                    }
+                                    // Ctrl+K: 删除光标到行尾
+                                    if c == 'k' {
+                                        input_buffer.truncate(cursor_position);
+                                    }
+                                    // Ctrl+U: 删除行首到光标
+                                    if c == 'u' {
+                                        input_buffer.drain(..cursor_position);
+                                        cursor_position = 0;
+                                    }
+                                    // Ctrl+W: 删除前一个词
+                                    if c == 'w' && cursor_position > 0 {
+                                        let wp = word_left(&input_buffer, cursor_position);
+                                        input_buffer.drain(wp..cursor_position);
+                                        cursor_position = wp;
+                                    }
+                                }
+                                crossterm::event::KeyCode::Char(c) if alt && !ctrl => {
+                                    // Alt+B: 左移一个词
+                                    if c == 'b' {
+                                        cursor_position =
+                                            word_left(&input_buffer, cursor_position);
+                                    }
+                                    // Alt+F: 右移一个词
+                                    if c == 'f' {
+                                        cursor_position =
+                                            word_right(&input_buffer, cursor_position);
+                                    }
+                                    // Alt+D: 删除到下一个词尾
+                                    if c == 'd' {
+                                        let wp =
+                                            word_right(&input_buffer, cursor_position);
+                                        if wp > cursor_position {
+                                            input_buffer.drain(cursor_position..wp);
+                                        }
+                                    }
+                                }
+                                crossterm::event::KeyCode::Char(c) if no_mod => {
+                                    let cp = cursor_position;
+                                    input_buffer.insert(cp, c);
+                                    cursor_position = cp + c.len_utf8();
+                                }
+
                                 _ => {}
                             }
                         }
