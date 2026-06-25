@@ -257,9 +257,32 @@ async fn standard_chat_proxy(
 
     // pi 固定使用 developer 角色，但多数 OpenAI 兼容 API（如 DeepSeek）不支持
     // 转发前统一转换为 system
-    let bytes = rewrite_developer_to_system(bytes.to_vec());
+    let mut bytes = rewrite_developer_to_system(bytes.to_vec());
 
-    // 临时诊断：打印发送给上游的请求体
+    // 修复：给缺失 required 的工具 schema 补上 "required": []
+    // DeepSeek 等 API 用 Python 反序列化 JSON Schema 时，会把不存在的 required
+    // 字段设为 None 而非当作"无必填参数"，导致 400 拒绝。
+    if let Ok(mut val) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+        let mut modified = false;
+        if let Some(tools) = val.get_mut("tools").and_then(|t| t.as_array_mut()) {
+            for tool in tools.iter_mut() {
+                if let Some(params) = tool
+                    .get_mut("function")
+                    .and_then(|f| f.get_mut("parameters"))
+                    .and_then(|p| p.as_object_mut())
+                {
+                    if !params.contains_key("required") {
+                        params.insert("required".to_string(), serde_json::json!([]));
+                        modified = true;
+                    }
+                }
+            }
+        }
+        if modified {
+            tracing::info!("已补全 tools 中缺失的 required 字段");
+            bytes = serde_json::to_vec(&val).unwrap_or(bytes);
+        }
+    }
     let body_str = String::from_utf8_lossy(&bytes);
     tracing::info!(
         "POST {} | body={} | auth={}",
@@ -279,12 +302,22 @@ async fn standard_chat_proxy(
         Ok(resp) => {
             let status = resp.status();
             let elapsed = upstream_start.elapsed();
+            let status_code = status.as_u16();
             tracing::info!(
                 "POST {} — 上游响应 status={} 耗时={}ms",
                 target_url,
-                status.as_u16(),
+                status_code,
                 elapsed.as_millis(),
             );
+            // 400 错误时打印完整请求体用于调试
+            if status_code == 400 {
+                let body_str = String::from_utf8_lossy(&bytes);
+                tracing::error!(
+                    "POST {} — 400 BAD REQUEST | 完整请求体:\n{}",
+                    target_url,
+                    body_str
+                );
+            }
             let headers = resp.headers().clone();
             let stream = resp.bytes_stream();
 

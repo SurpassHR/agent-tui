@@ -77,7 +77,7 @@ impl Component for BottomBar {
             Span::from("Ctrl+C").fg(theme.heading).bold(),
             Span::from(" quit; "),
             Span::from("|").fg(theme.text_dim),
-            Span::from(" Ctrl+Z").fg(theme.heading).bold(),
+            Span::from(" Esc").fg(theme.heading).bold(),
             Span::from(" abort; "),
             Span::from("|").fg(theme.text_dim),
             Span::from(" Tab").fg(theme.heading).bold(),

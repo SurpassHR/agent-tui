@@ -1167,9 +1167,17 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                             app.agent_status = AgentStatus::Idle;
                         }
 
-                        // Esc: 退出详情视图 / 关闭 Popup / 编辑表单 / 取消删除确认
+                        // Esc: 终止请求 / 退出详情视图 / 关闭 Popup / 编辑表单 / 取消删除确认
                         crossterm::event::KeyCode::Esc => {
-                            if app.tui.confirm_delete.is_some() {
+                            if app.agent_status == AgentStatus::Running
+                                || app.agent_status == AgentStatus::Starting
+                            {
+                                // 正在请求 → 终止
+                                tracing::debug!("Esc 发送 abort");
+                                let cmd = serde_json::json!({"type": "abort"});
+                                let _ = client.request(cmd, Duration::from_secs(5)).await;
+                                app.agent_status = AgentStatus::Idle;
+                            } else if app.tui.confirm_delete.is_some() {
                                 app.tui.confirm_delete = None;
                             } else if app.tui.main_view.completion_popup.is_some() {
                                 app.tui.main_view.completion_popup = None;
