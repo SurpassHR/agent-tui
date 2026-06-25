@@ -29,3 +29,8 @@ Thumbs.db
 # Quick-design preview artifacts
 /.superpowers/
 .opencode/.playwright-cli/
+.sdd/
+
+# Subagent artifacts
+context.md
+scroll_debug.log
