@@ -78,6 +78,11 @@ fn translate_pi_events(event: PiEvent, agent_id: &str) -> Vec<Action> {
                         text: assistant_event.delta.clone().unwrap_or_default(),
                     });
                 }
+                AssistantEventType::ThinkingStart => {
+                    actions.push(Action::ThinkingStart {
+                        agent_id: agent_id.into(),
+                    });
+                }
                 AssistantEventType::ThinkingEnd => {
                     actions.push(Action::ThinkingFinalize {
                         agent_id: agent_id.into(),
@@ -229,6 +234,32 @@ fn translate_single_action(event: PiEvent, agent_id: &str) -> Option<Action> {
             tracing::debug!("EVENT: unhandled {:?}", std::mem::discriminant(other));
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod event_translation_tests {
+    use super::*;
+    use crate::backend::event::AssistantMessageEvent;
+
+    #[test]
+    fn thinking_start_should_translate_to_action() {
+        let actions = translate_pi_events(
+            PiEvent::MessageUpdate {
+                assistant_event: AssistantMessageEvent {
+                    event_type: AssistantEventType::ThinkingStart,
+                    delta: None,
+                },
+                delta: None,
+                message: None,
+            },
+            "agent-1",
+        );
+
+        assert!(matches!(
+            actions.as_slice(),
+            [Action::ThinkingStart { agent_id }] if agent_id == "agent-1"
+        ));
     }
 }
 
@@ -477,9 +508,7 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                 // 发送 set_model 给恢复的 pi 进程（否则 pi 不知道用哪个模型）
                 let model = app.tui.current_model.clone();
                 if !model.is_empty() {
-                    if let Some(session_client) =
-                        app.agent_manager.client_mut(session_id)
-                    {
+                    if let Some(session_client) = app.agent_manager.client_mut(session_id) {
                         let _ = session_client
                             .notify(serde_json::json!({
                                 "type": "set_model",

@@ -36,6 +36,8 @@ pub enum Action {
     MessageFinalize { agent_id: String },
     /// 流式追加思考过程文本
     ThinkingAppend { agent_id: String, text: String },
+    /// 开始一个新的思考块
+    ThinkingStart { agent_id: String },
     /// 思考过程完成
     ThinkingFinalize { agent_id: String, text: String },
     /// 工具执行事件（start/update/end）

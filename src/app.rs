@@ -11,7 +11,7 @@ use crate::components::popup::Popup;
 use crate::components::sidebar::Sidebar;
 use crate::components::Component;
 use crate::errors::Result;
-use crate::message::ChatMessage;
+use crate::message::{ChatMessage, ContentBlock};
 use crate::theme::Theme;
 use crossterm::event::KeyCode;
 use ratatui::layout::Rect;
@@ -1268,6 +1268,10 @@ impl App {
                 self.append_to_last_assistant_thinking(&agent_id, &text);
             }
 
+            Action::ThinkingStart { agent_id } => {
+                self.start_new_assistant_thinking(&agent_id);
+            }
+
             Action::ThinkingFinalize { agent_id, text } => {
                 self.finalize_thinking(&agent_id, &text);
             }
@@ -1281,17 +1285,14 @@ impl App {
                 // 更新最后一条 Assistant 消息的 content 数组；
                 // 若不存在则创建（处理首帧 message_update 不含 delta 的情况）
                 let msgs = self.messages.entry(agent_id.clone()).or_default();
-                if let Some(last) = msgs
-                    .iter_mut()
-                    .rev()
-                    .find(|m| matches!(m.role, crate::message::ChatRole::Assistant))
-                {
+                if let Some(last) = tail_assistant_mut(msgs) {
                     last.content = content;
                 } else {
                     let mut msg = ChatMessage::assistant(&agent_id, "");
                     msg.content = content;
                     msgs.push(msg);
                 }
+                self.sync_messages_to_main_view(&agent_id);
             }
 
             Action::ToggleBlock {
@@ -1617,8 +1618,7 @@ impl App {
                         // 发送 set_model 给新 pi 进程
                         let model = self.tui.current_model.clone();
                         if !model.is_empty() {
-                            if let Some(session_client) =
-                                self.agent_manager.client_mut(&session_id)
+                            if let Some(session_client) = self.agent_manager.client_mut(&session_id)
                             {
                                 let _ = session_client
                                     .notify(serde_json::json!({
@@ -2010,9 +2010,7 @@ impl App {
                             }
                         }
                         // 持久化自定义名称，重启后恢复
-                        self.tui
-                            .session_names
-                            .insert(session_id, new_name.clone());
+                        self.tui.session_names.insert(session_id, new_name.clone());
                         crate::persistence::save(&self.build_persist_state());
                         self.sync_components();
                         self.tui.bottom_bar.status = format!("「{}」→「{}」", old_name, new_name);
@@ -2077,16 +2075,17 @@ impl App {
     /// 如果不存在 assistant 消息，创建一个新消息
     fn append_to_last_assistant(&mut self, agent_id: &str, text: &str) {
         let msgs = self.messages.entry(agent_id.to_string()).or_default();
-        let found = msgs.iter_mut().rev().any(|m| {
-            if matches!(m.role, crate::message::ChatRole::Assistant) {
-                m.text.push_str(text);
-                true
-            } else {
-                false
+        if let Some(msg) = tail_assistant_mut(msgs) {
+            let content_already_has_delta =
+                msg.text.is_empty() && text_content_ends_with(&msg.content, text);
+            msg.text.push_str(text);
+            if !content_already_has_delta {
+                append_text_content_block(&mut msg.content, text);
             }
-        });
-        if !found {
-            msgs.push(ChatMessage::assistant(agent_id, text));
+        } else {
+            let mut msg = ChatMessage::assistant(agent_id, text);
+            append_text_content_block(&mut msg.content, text);
+            msgs.push(msg);
         }
         self.sync_messages_to_main_view(agent_id);
     }
@@ -2095,18 +2094,33 @@ impl App {
     /// 如果不存在 assistant 消息，创建一个新的
     fn append_to_last_assistant_thinking(&mut self, agent_id: &str, text: &str) {
         let msgs = self.messages.entry(agent_id.to_string()).or_default();
-        let found = msgs.iter_mut().rev().any(|m| {
-            if matches!(m.role, crate::message::ChatRole::Assistant) {
-                let t = m.thinking.get_or_insert_with(String::new);
-                t.push_str(text);
-                true
-            } else {
-                false
+        if let Some(msg) = tail_assistant_mut(msgs) {
+            let content_already_has_delta = msg.thinking.as_deref().unwrap_or_default().is_empty()
+                && thinking_content_ends_with(&msg.content, text);
+            let t = msg.thinking.get_or_insert_with(String::new);
+            t.push_str(text);
+            if !content_already_has_delta {
+                append_thinking_content_block(&mut msg.content, text);
             }
-        });
-        if !found {
+        } else {
             let mut msg = ChatMessage::assistant(agent_id, "");
             msg.thinking = Some(text.to_string());
+            append_thinking_content_block(&mut msg.content, text);
+            msgs.push(msg);
+        }
+        self.sync_messages_to_main_view(agent_id);
+    }
+
+    /// 开始一个新的 thinking 块
+    fn start_new_assistant_thinking(&mut self, agent_id: &str) {
+        let msgs = self.messages.entry(agent_id.to_string()).or_default();
+        if let Some(msg) = tail_assistant_mut(msgs) {
+            msg.thinking.get_or_insert_with(String::new);
+            push_empty_thinking_content_block(&mut msg.content);
+        } else {
+            let mut msg = ChatMessage::assistant(agent_id, "");
+            msg.thinking = Some(String::new());
+            push_empty_thinking_content_block(&mut msg.content);
             msgs.push(msg);
         }
         self.sync_messages_to_main_view(agent_id);
@@ -2115,17 +2129,15 @@ impl App {
     /// 定型 thinking 文本
     fn finalize_thinking(&mut self, agent_id: &str, text: &str) {
         let msgs = self.messages.entry(agent_id.to_string()).or_default();
-        let found = msgs.iter_mut().rev().any(|m| {
-            if matches!(m.role, crate::message::ChatRole::Assistant) {
-                m.thinking = Some(text.to_string());
-                true
-            } else {
-                false
+        if let Some(msg) = tail_assistant_mut(msgs) {
+            if !text.is_empty() {
+                msg.thinking = Some(text.to_string());
+                replace_last_thinking_content_block(&mut msg.content, text);
             }
-        });
-        if !found {
+        } else if !text.is_empty() {
             let mut msg = ChatMessage::assistant(agent_id, "");
             msg.thinking = Some(text.to_string());
+            append_thinking_content_block(&mut msg.content, text);
             msgs.push(msg);
         }
         self.sync_messages_to_main_view(agent_id);
@@ -2144,7 +2156,104 @@ impl App {
             tracing::debug!("SYNC agent={} NOT FOUND in messages map", agent_id);
         }
     }
+}
 
+fn append_text_content_block(content: &mut Vec<ContentBlock>, text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    if let Some(ContentBlock::Text { text: current }) = content.last_mut() {
+        current.push_str(text);
+    } else {
+        content.push(ContentBlock::Text {
+            text: text.to_string(),
+        });
+    }
+}
+
+fn tail_assistant_mut(messages: &mut [ChatMessage]) -> Option<&mut ChatMessage> {
+    messages
+        .last_mut()
+        .filter(|message| matches!(message.role, crate::message::ChatRole::Assistant))
+}
+
+fn text_content_ends_with(content: &[ContentBlock], text: &str) -> bool {
+    if text.is_empty() {
+        return true;
+    }
+    let current = content
+        .iter()
+        .filter_map(|block| {
+            if let ContentBlock::Text { text } = block {
+                Some(text.as_str())
+            } else {
+                None
+            }
+        })
+        .collect::<String>();
+    current.ends_with(text)
+}
+
+fn append_thinking_content_block(content: &mut Vec<ContentBlock>, text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    if let Some(ContentBlock::Thinking { thinking }) = content.last_mut() {
+        thinking.push_str(text);
+    } else {
+        content.push(ContentBlock::Thinking {
+            thinking: text.to_string(),
+        });
+    }
+}
+
+fn push_empty_thinking_content_block(content: &mut Vec<ContentBlock>) {
+    if matches!(
+        content.last(),
+        Some(ContentBlock::Thinking { thinking }) if thinking.is_empty()
+    ) {
+        return;
+    }
+    content.push(ContentBlock::Thinking {
+        thinking: String::new(),
+    });
+}
+
+fn thinking_content_ends_with(content: &[ContentBlock], text: &str) -> bool {
+    if text.is_empty() {
+        return true;
+    }
+    content
+        .iter()
+        .rev()
+        .find_map(|block| {
+            if let ContentBlock::Thinking { thinking } = block {
+                Some(thinking.ends_with(text))
+            } else {
+                None
+            }
+        })
+        .unwrap_or(false)
+}
+
+fn replace_last_thinking_content_block(content: &mut Vec<ContentBlock>, text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    if let Some(block) = content
+        .iter_mut()
+        .rev()
+        .find(|block| matches!(block, ContentBlock::Thinking { .. }))
+    {
+        if let ContentBlock::Thinking { thinking } = block {
+            *thinking = text.to_string();
+        }
+    } else {
+        append_thinking_content_block(content, text);
+    }
+}
+
+impl App {
     /// 渲染前同步所有组件数据
     pub(crate) fn sync_components(&mut self) {
         // 同步 forwarding_agent_tx（确保默认 pi 的事件转发到当前的 active_agent）
@@ -5165,6 +5274,286 @@ mod tests {
         ));
         assert!(!app.tui.main_view.messages[1].text.is_empty());
         assert_eq!(app.tui.main_view.messages[1].content.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn thinking_delta_should_build_content_blocks_for_streaming_render() {
+        let mut app = App::new_rpc(tokio::sync::mpsc::channel::<Action>(1).0);
+        let agent_id = app.active_agent.clone().unwrap();
+
+        app.handle_action(Action::ThinkingAppend {
+            agent_id: agent_id.clone(),
+            text: "先分析问题。\n".to_string(),
+        })
+        .await
+        .unwrap();
+        app.handle_action(Action::ThinkingAppend {
+            agent_id: agent_id.clone(),
+            text: "再给出修复。".to_string(),
+        })
+        .await
+        .unwrap();
+        app.handle_action(Action::MessageAppend {
+            agent_id: agent_id.clone(),
+            text: "最终回复".to_string(),
+        })
+        .await
+        .unwrap();
+
+        let msg = app.messages.get(&agent_id).unwrap().last().unwrap();
+        assert_eq!(msg.content.len(), 2);
+        assert!(matches!(
+            &msg.content[0],
+            crate::message::ContentBlock::Thinking { thinking }
+                if thinking == "先分析问题。\n再给出修复。"
+        ));
+        assert!(matches!(
+            &msg.content[1],
+            crate::message::ContentBlock::Text { text } if text == "最终回复"
+        ));
+        assert_eq!(app.tui.main_view.messages[0].content.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn content_update_should_sync_main_view_immediately() {
+        let mut app = App::new_rpc(tokio::sync::mpsc::channel::<Action>(1).0);
+        let agent_id = app.active_agent.clone().unwrap();
+
+        app.handle_action(Action::ContentUpdate {
+            agent_id: agent_id.clone(),
+            content: vec![crate::message::ContentBlock::Thinking {
+                thinking: "完整思考快照".to_string(),
+            }],
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(app.tui.main_view.messages.len(), 1);
+        assert!(matches!(
+            &app.tui.main_view.messages[0].content[0],
+            crate::message::ContentBlock::Thinking { thinking }
+                if thinking == "完整思考快照"
+        ));
+    }
+
+    #[tokio::test]
+    async fn thinking_finalize_should_keep_streamed_text_when_delta_is_empty() {
+        let mut app = App::new_rpc(tokio::sync::mpsc::channel::<Action>(1).0);
+        let agent_id = app.active_agent.clone().unwrap();
+
+        app.handle_action(Action::ThinkingAppend {
+            agent_id: agent_id.clone(),
+            text: "已经流式收到的思考".to_string(),
+        })
+        .await
+        .unwrap();
+        app.handle_action(Action::ThinkingFinalize {
+            agent_id: agent_id.clone(),
+            text: String::new(),
+        })
+        .await
+        .unwrap();
+
+        let msg = app.messages.get(&agent_id).unwrap().last().unwrap();
+        assert_eq!(msg.thinking.as_deref(), Some("已经流式收到的思考"));
+    }
+
+    #[tokio::test]
+    async fn thinking_append_after_tool_should_create_tail_assistant_message() {
+        let mut app = App::new_rpc(tokio::sync::mpsc::channel::<Action>(1).0);
+        let agent_id = app.active_agent.clone().unwrap();
+
+        app.handle_action(Action::ThinkingAppend {
+            agent_id: agent_id.clone(),
+            text: "工具前思考".to_string(),
+        })
+        .await
+        .unwrap();
+        app.handle_action(Action::ToolEvent {
+            agent_id: agent_id.clone(),
+            tool_name: "bash".to_string(),
+            tool_call_id: "tc-tail".to_string(),
+            status: crate::message::ToolStatus::Running,
+            args: Some(serde_json::json!({"command": "echo ok"})),
+            result: None,
+            is_error: false,
+        })
+        .await
+        .unwrap();
+        app.handle_action(Action::ThinkingAppend {
+            agent_id: agent_id.clone(),
+            text: "工具后思考".to_string(),
+        })
+        .await
+        .unwrap();
+
+        let msgs = app.messages.get(&agent_id).unwrap();
+        assert_eq!(msgs.len(), 3);
+        assert!(matches!(msgs[0].role, crate::message::ChatRole::Assistant));
+        assert!(matches!(msgs[1].role, crate::message::ChatRole::Tool));
+        assert!(matches!(msgs[2].role, crate::message::ChatRole::Assistant));
+        assert_eq!(msgs[0].thinking.as_deref(), Some("工具前思考"));
+        assert_eq!(msgs[2].thinking.as_deref(), Some("工具后思考"));
+        assert_eq!(app.tui.main_view.messages.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn message_append_after_tool_should_create_tail_assistant_message() {
+        let mut app = App::new_rpc(tokio::sync::mpsc::channel::<Action>(1).0);
+        let agent_id = app.active_agent.clone().unwrap();
+
+        app.handle_action(Action::MessageAppend {
+            agent_id: agent_id.clone(),
+            text: "工具前回复".to_string(),
+        })
+        .await
+        .unwrap();
+        app.handle_action(Action::ToolEvent {
+            agent_id: agent_id.clone(),
+            tool_name: "bash".to_string(),
+            tool_call_id: "tc-text-tail".to_string(),
+            status: crate::message::ToolStatus::Running,
+            args: Some(serde_json::json!({"command": "echo ok"})),
+            result: None,
+            is_error: false,
+        })
+        .await
+        .unwrap();
+        app.handle_action(Action::MessageAppend {
+            agent_id: agent_id.clone(),
+            text: "工具后回复".to_string(),
+        })
+        .await
+        .unwrap();
+
+        let msgs = app.messages.get(&agent_id).unwrap();
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs[0].text, "工具前回复");
+        assert!(matches!(msgs[1].role, crate::message::ChatRole::Tool));
+        assert_eq!(msgs[2].text, "工具后回复");
+    }
+
+    #[tokio::test]
+    async fn content_update_after_tool_should_create_tail_assistant_message() {
+        let mut app = App::new_rpc(tokio::sync::mpsc::channel::<Action>(1).0);
+        let agent_id = app.active_agent.clone().unwrap();
+
+        app.handle_action(Action::ContentUpdate {
+            agent_id: agent_id.clone(),
+            content: vec![crate::message::ContentBlock::Thinking {
+                thinking: "工具前快照".to_string(),
+            }],
+        })
+        .await
+        .unwrap();
+        app.handle_action(Action::ToolEvent {
+            agent_id: agent_id.clone(),
+            tool_name: "bash".to_string(),
+            tool_call_id: "tc-content-tail".to_string(),
+            status: crate::message::ToolStatus::Running,
+            args: Some(serde_json::json!({"command": "echo ok"})),
+            result: None,
+            is_error: false,
+        })
+        .await
+        .unwrap();
+        app.handle_action(Action::ContentUpdate {
+            agent_id: agent_id.clone(),
+            content: vec![crate::message::ContentBlock::Thinking {
+                thinking: "工具后快照".to_string(),
+            }],
+        })
+        .await
+        .unwrap();
+
+        let msgs = app.messages.get(&agent_id).unwrap();
+        assert_eq!(msgs.len(), 3);
+        assert!(matches!(
+            &msgs[0].content[0],
+            crate::message::ContentBlock::Thinking { thinking } if thinking == "工具前快照"
+        ));
+        assert!(matches!(msgs[1].role, crate::message::ChatRole::Tool));
+        assert!(matches!(
+            &msgs[2].content[0],
+            crate::message::ContentBlock::Thinking { thinking } if thinking == "工具后快照"
+        ));
+    }
+
+    #[tokio::test]
+    async fn thinking_start_should_begin_new_content_block() {
+        let mut app = App::new_rpc(tokio::sync::mpsc::channel::<Action>(1).0);
+        let agent_id = app.active_agent.clone().unwrap();
+
+        app.handle_action(Action::ThinkingAppend {
+            agent_id: agent_id.clone(),
+            text: "第一段思考".to_string(),
+        })
+        .await
+        .unwrap();
+        app.handle_action(Action::ThinkingStart {
+            agent_id: agent_id.clone(),
+        })
+        .await
+        .unwrap();
+        app.handle_action(Action::ThinkingAppend {
+            agent_id: agent_id.clone(),
+            text: "第二段思考".to_string(),
+        })
+        .await
+        .unwrap();
+
+        let msg = app.messages.get(&agent_id).unwrap().last().unwrap();
+        assert_eq!(msg.content.len(), 2);
+        assert!(matches!(
+            &msg.content[0],
+            crate::message::ContentBlock::Thinking { thinking } if thinking == "第一段思考"
+        ));
+        assert!(matches!(
+            &msg.content[1],
+            crate::message::ContentBlock::Thinking { thinking } if thinking == "第二段思考"
+        ));
+    }
+
+    #[tokio::test]
+    async fn thinking_start_after_tool_should_create_tail_assistant_message() {
+        let mut app = App::new_rpc(tokio::sync::mpsc::channel::<Action>(1).0);
+        let agent_id = app.active_agent.clone().unwrap();
+
+        app.handle_action(Action::ThinkingAppend {
+            agent_id: agent_id.clone(),
+            text: "工具前思考".to_string(),
+        })
+        .await
+        .unwrap();
+        app.handle_action(Action::ToolEvent {
+            agent_id: agent_id.clone(),
+            tool_name: "bash".to_string(),
+            tool_call_id: "tc-thinking-start-tail".to_string(),
+            status: crate::message::ToolStatus::Running,
+            args: Some(serde_json::json!({"command": "echo ok"})),
+            result: None,
+            is_error: false,
+        })
+        .await
+        .unwrap();
+        app.handle_action(Action::ThinkingStart {
+            agent_id: agent_id.clone(),
+        })
+        .await
+        .unwrap();
+        app.handle_action(Action::ThinkingAppend {
+            agent_id: agent_id.clone(),
+            text: "工具后思考".to_string(),
+        })
+        .await
+        .unwrap();
+
+        let msgs = app.messages.get(&agent_id).unwrap();
+        assert_eq!(msgs.len(), 3);
+        assert!(matches!(msgs[0].role, crate::message::ChatRole::Assistant));
+        assert!(matches!(msgs[1].role, crate::message::ChatRole::Tool));
+        assert!(matches!(msgs[2].role, crate::message::ChatRole::Assistant));
+        assert_eq!(msgs[2].thinking.as_deref(), Some("工具后思考"));
     }
 
     /// 测试：CreateSession 的前置逻辑 —— workspace 查找、session 路径生成

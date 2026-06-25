@@ -119,7 +119,8 @@ impl MainView {
 
         // 设置终端光标位置（仅在获得焦点且处于 Input 子区时）
         if self.has_focus && self.subsection == MainViewSubsection::Input {
-            let col = input_area.x + Self::cursor_display_col(&self.input_buffer, self.cursor_position);
+            let col =
+                input_area.x + Self::cursor_display_col(&self.input_buffer, self.cursor_position);
             f.set_cursor_position(ratatui::layout::Position::new(col, input_area.y));
         }
     }
@@ -487,7 +488,8 @@ impl Component for MainView {
 
         // 设置终端光标位置（仅在获得焦点且处于 Input 子区时）
         if self.has_focus && self.subsection == MainViewSubsection::Input {
-            let col = input_area.x + Self::cursor_display_col(&self.input_buffer, self.cursor_position);
+            let col =
+                input_area.x + Self::cursor_display_col(&self.input_buffer, self.cursor_position);
             f.set_cursor_position(ratatui::layout::Position::new(col, input_area.y));
         }
 
