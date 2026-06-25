@@ -2,7 +2,7 @@
 
 use axum::{
     body::Body,
-    extract::State,
+    extract::{Path, State},
     http::{HeaderMap, HeaderName, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -38,6 +38,9 @@ pub async fn start_router(config: SharedConfig) -> Result<u16, crate::errors::Er
     let mut try_port = port;
     let app = Router::new()
         .route("/v1/chat/completions", post(handle_chat_completions))
+        .route("/v1/responses", post(handle_responses))
+        .route("/v1/messages", post(handle_messages))
+        .route("/v1/models/{model}:generateContent", post(handle_gemini))
         .route("/v1/models", get(handle_models))
         .with_state(state);
 
@@ -104,7 +107,101 @@ async fn handle_chat_completions(
         .await
     } else {
         // 标准模式：读 model 字段路由
-        standard_chat_proxy(&state.http, &provider, headers, body, &config).await
+        standard_chat_proxy(
+            &state.http,
+            &provider,
+            "/v1/chat/completions",
+            headers,
+            body,
+            &config,
+        )
+        .await
+    }
+}
+
+/// POST /v1/responses
+async fn handle_responses(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let config = state.config.read().await;
+    let provider = match config.active_provider() {
+        Some(p) => p.clone(),
+        None => {
+            return (StatusCode::NOT_FOUND, "{\"error\":\"no active provider\"}").into_response();
+        }
+    };
+    if provider.bridge {
+        bridge_proxy(&state.http, &provider.base_url, "/v1/responses", headers, body).await
+    } else {
+        standard_chat_proxy(
+            &state.http,
+            &provider,
+            "/v1/responses",
+            headers,
+            body,
+            &config,
+        )
+        .await
+    }
+}
+
+/// POST /v1/messages
+async fn handle_messages(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let config = state.config.read().await;
+    let provider = match config.active_provider() {
+        Some(p) => p.clone(),
+        None => {
+            return (StatusCode::NOT_FOUND, "{\"error\":\"no active provider\"}").into_response();
+        }
+    };
+    if provider.bridge {
+        bridge_proxy(&state.http, &provider.base_url, "/v1/messages", headers, body).await
+    } else {
+        standard_chat_proxy(
+            &state.http,
+            &provider,
+            "/v1/messages",
+            headers,
+            body,
+            &config,
+        )
+        .await
+    }
+}
+
+/// POST /v1/models/{model}:generateContent
+async fn handle_gemini(
+    State(state): State<Arc<AppState>>,
+    Path(model): Path<String>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let config = state.config.read().await;
+    let provider = match config.active_provider() {
+        Some(p) => p.clone(),
+        None => {
+            return (StatusCode::NOT_FOUND, "{\"error\":\"no active provider\"}").into_response();
+        }
+    };
+    let path = format!("/v1/models/{}:generateContent", model);
+    if provider.bridge {
+        bridge_proxy(&state.http, &provider.base_url, &path, headers, body).await
+    } else {
+        standard_chat_proxy(
+            &state.http,
+            &provider,
+            &path,
+            headers,
+            body,
+            &config,
+        )
+        .await
     }
 }
 
@@ -174,6 +271,7 @@ async fn bridge_proxy(
 async fn standard_chat_proxy(
     client: &Client,
     _provider: &super::ProviderInfo,
+    path: &str,
     _headers: HeaderMap,
     body: Body,
     config: &ProviderConfig,
@@ -220,12 +318,14 @@ async fn standard_chat_proxy(
     };
 
     let target_url = format!(
-        "{}/v1/chat/completions",
-        target.base_url.trim_end_matches('/')
+        "{}{}",
+        target.base_url.trim_end_matches('/'),
+        path
     );
 
     tracing::info!(
-        "POST /v1/chat/completions — model={} → provider={} → {}",
+        "POST {} — model={} → provider={} → {}",
+        path,
         model,
         target.id,
         target_url,
