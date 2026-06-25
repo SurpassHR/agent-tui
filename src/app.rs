@@ -1929,7 +1929,8 @@ impl App {
                 self.tui.main_view.messages = msgs.clone();
             }
         }
-        self.tui.agent_panel.active_agent = self.active_agent.clone().unwrap_or_default();
+        // AGENTS 面板始终显示 "pi" 作为当前 agent 名称，不与 session ID 混淆
+        self.tui.agent_panel.active_agent = "pi".to_string();
         self.tui.agent_panel.agent_status = Some(self.agent_status.clone());
         self.tui
             .agent_panel
