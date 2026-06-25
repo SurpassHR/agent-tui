@@ -378,8 +378,9 @@ pub fn pad_value(value: &str, width: usize) -> String {
     }
 }
 
-/// 编辑表单视觉焦点顺序：模式切换 → Provider ID → 名称 → Base URL → API Key → 模型
-const FIELD_ORDER: [usize; 6] = [4, 0, 1, 2, 3, 5];
+/// 编辑表单视觉焦点顺序：端点类型 → ID → 名称 → Base URL → API Key → 模型 → 桥接
+const FIELD_ORDER: [usize; 7] = [6, 0, 1, 2, 3, 5, 4];
+// 6=endpoint_type, 0=ID, 1=name, 2=base_url, 3=api_key, 5=models, 4=bridge
 
 fn prev_field(current: usize) -> usize {
     if let Some(pos) = FIELD_ORDER.iter().position(|&f| f == current) {
@@ -478,7 +479,7 @@ impl TuiState {
                 is_new: false,
                 index: idx,
                 draft: p.clone(),
-                field_focus: 4,
+                field_focus: 6,
                 models_text,
                 models_fetching: false,
                 model_mgr: None,
@@ -546,7 +547,7 @@ impl TuiState {
                                 models: vec![],
                                 endpoint_type: "openai_compat".into(),
                             },
-                            field_focus: 4,
+                            field_focus: 6,
                             models_text: String::new(),
                             models_fetching: false,
                             model_mgr: None,
@@ -794,7 +795,13 @@ impl TuiState {
             KeyCode::Tab => {
                 if let Some(ref mut editor) = self.provider_editor {
                     let old = editor.field_focus;
-                    let new = next_field(old);
+                    let mut new = next_field(old);
+                    // bridge=true 时跳过字段 6（端点类型）
+                    if editor.draft.bridge {
+                        while new == 6 {
+                            new = next_field(new);
+                        }
+                    }
                     editor.field_focus = new;
                     if old == 3
                         && new != 3
@@ -854,6 +861,14 @@ impl TuiState {
                 if let Some(ref mut editor) = self.provider_editor {
                     if editor.field_focus == 4 {
                         editor.draft.bridge = !editor.draft.bridge;
+                    } else if editor.field_focus == 6 {
+                        // 端点类型循环切换
+                        editor.draft.endpoint_type = match editor.draft.endpoint_type.as_str() {
+                            "openai_responses" => "anthropic_messages".into(),
+                            "anthropic_messages" => "gemini".into(),
+                            "gemini" => "openai_compat".into(),
+                            _ => "openai_responses".into(),
+                        };
                     } else if editor.field_focus != 5 {
                         match editor.field_focus {
                             0 => {
@@ -889,7 +904,7 @@ impl TuiState {
                         3 => {
                             editor.draft.api_key.push(c);
                         }
-                        4 | 5 => {}
+                        4..=6 => {}
                         _ => {}
                     }
                 }
@@ -898,7 +913,12 @@ impl TuiState {
             KeyCode::Up => {
                 if let Some(ref mut editor) = self.provider_editor {
                     let old = editor.field_focus;
-                    let new = prev_field(old);
+                    let mut new = prev_field(old);
+                    if editor.draft.bridge {
+                        while new == 6 {
+                            new = prev_field(new);
+                        }
+                    }
                     editor.field_focus = new;
                     if old == 3
                         && new != 3
@@ -915,7 +935,12 @@ impl TuiState {
             KeyCode::Down => {
                 if let Some(ref mut editor) = self.provider_editor {
                     let old = editor.field_focus;
-                    let new = next_field(old);
+                    let mut new = next_field(old);
+                    if editor.draft.bridge {
+                        while new == 6 {
+                            new = next_field(new);
+                        }
+                    }
                     editor.field_focus = new;
                     if old == 3
                         && new != 3
@@ -2210,6 +2235,10 @@ impl App {
                     Span::from("  mode     ").fg(theme.text_dim),
                     Span::from(if p.bridge { "bridge" } else { "standard" }).fg(theme.accent),
                 ]));
+                ln.push(Line::from(vec![
+                    Span::from("  endpoint ").fg(theme.text_dim),
+                    Span::from(p.endpoint_type.clone()).fg(theme.accent),
+                ]));
                 ln.push(Line::from(""));
                 ln.push(Line::from(
                     Span::from(format!("  models ({})", p.models.len()))
@@ -2259,11 +2288,6 @@ impl App {
                     format!(" {} 编辑 Provider ", icon)
                 };
                 let is_std = !editor.draft.bridge;
-                let (std_fg, brg_fg) = if is_std {
-                    (theme.success, theme.text_dim)
-                } else {
-                    (theme.text_dim, theme.success)
-                };
 
                 let mask_secret = |value: &str, width: usize| -> String {
                     if value.is_empty() {
@@ -2279,28 +2303,67 @@ impl App {
                 // ── 构建内容行 ──
                 let mut ln: Vec<Line<'static>> = Vec::new();
 
-                // 模式条
+                // ── 端点类型选择器 ──
                 {
-                    let f_mode = editor.field_focus == 4;
-                    let mode_label = if f_mode {
-                        " ▎模式".to_string()
+                    let f_ep = editor.field_focus == 6;
+                    let ep_label = if f_ep {
+                        " ▎端点类型".to_string()
                     } else {
-                        "  模式".to_string()
+                        "  端点类型".to_string()
                     };
+                    let disabled = editor.draft.bridge;
                     ln.push(Line::from(
-                        Span::from(mode_label)
-                            .fg(if f_mode { theme.accent } else { theme.text_dim })
+                        Span::from(ep_label)
+                            .fg(if f_ep { theme.accent } else { theme.text_dim })
                             .bold(),
                     ));
+                    if disabled {
+                        ln.push(Line::from(
+                            Span::from(format!(
+                                "  {} （桥接模式）",
+                                editor.draft.endpoint_type
+                            ))
+                            .fg(theme.border_dim),
+                        ));
+                    } else {
+                        let opts = [
+                            ("openai_compat", "OpenAI 兼容"),
+                            ("openai_responses", "OpenAI Responses"),
+                            ("anthropic_messages", "Anthropic Messages"),
+                            ("gemini", "Gemini"),
+                        ];
+                        for (val, label) in &opts {
+                            let selected = *val == editor.draft.endpoint_type;
+                            let (marker, fg) = if selected {
+                                ("◆", theme.accent)
+                            } else {
+                                ("○", theme.text_dim)
+                            };
+                            ln.push(Line::from(
+                                Span::from(format!("    {} {}", marker, label)).fg(fg),
+                            ));
+                        }
+                    }
+                }
+
+                // ── 桥接模式开关 ──
+                {
+                    let f_br = editor.field_focus == 4;
+                    let br_label = if f_br {
+                        " ▎桥接模式".to_string()
+                    } else {
+                        "  桥接模式".to_string()
+                    };
+                    let (marker, fg) = if editor.draft.bridge {
+                        ("[✓]", theme.success)
+                    } else {
+                        ("[ ]", theme.text_dim)
+                    };
                     ln.push(Line::from(vec![
-                        Span::from(format!("  {} 标准模式", if is_std { "◉" } else { "○" }))
-                            .fg(std_fg)
+                        Span::from(br_label)
+                            .fg(if f_br { theme.accent } else { theme.text_dim })
                             .bold(),
-                        Span::from("  │  ").fg(theme.border_dim),
-                        Span::from(format!("{} 桥接模式", if !is_std { "◉" } else { "○" }))
-                            .fg(brg_fg)
-                            .bold(),
-                        Span::from(if !is_std { " 🔗" } else { "" }).fg(brg_fg),
+                        Span::from(format!("  {} 启用", marker)).fg(fg),
                     ]));
                 }
 
@@ -2442,10 +2505,10 @@ impl App {
                 ln.push(Line::from(
                     Span::from(format!(" {}", rule)).fg(theme.border_dim),
                 ));
-                let mode_hint = if editor.field_focus == 4 {
-                    "  [Space] 切换模式"
-                } else {
-                    ""
+                let hint_text = match editor.field_focus {
+                    6 => "  [Space] 切换端点类型",
+                    4 => "  [Space] 切换桥接",
+                    _ => "",
                 };
                 ln.push(Line::from(vec![
                     Span::from(" "),
@@ -2454,7 +2517,7 @@ impl App {
                     Span::from("[取消]").fg(theme.text),
                     Span::from(format!(
                         "{}  [Tab] 字段  [Enter] 保存  [Esc] 取消",
-                        mode_hint
+                        hint_text
                     ))
                     .fg(theme.text_dim),
                 ]));

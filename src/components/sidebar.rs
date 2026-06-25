@@ -361,6 +361,9 @@ impl Sidebar {
                     "○"
                 };
                 let mut text = format!("  {} {}  ({} models)", icon, p.name, cnt);
+                if !p.endpoint_type.is_empty() && p.endpoint_type != "openai_compat" {
+                    text.push_str(&format!(" [{}]", p.endpoint_type));
+                }
                 if p.bridge {
                     text.push_str(" 🔗");
                 }
