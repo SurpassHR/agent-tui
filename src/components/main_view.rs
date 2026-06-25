@@ -88,7 +88,7 @@ impl MainView {
         f.render_widget(block, area);
 
         let inner = inset_content(area);
-        let input_height = 2u16; // 输入提示行 + 空行
+        let input_height = 1u16; // 输入行（render_input_inner 只产生 1 行）
         let sep_height = 1u16; // 分割线
         let msg_area_height = inner.height.saturating_sub(input_height + sep_height);
         let sep_area = Rect::new(inner.x, inner.y + msg_area_height, inner.width, sep_height);
@@ -406,7 +406,7 @@ impl Component for MainView {
         let inner = inset_content(area);
 
         // 计算可用行数（预留底部分割线 + 输入行）
-        let input_height = 2u16; // 输入提示行 + 空行
+        let input_height = 1u16; // 输入行（render_input_inner 只产生 1 行）
         let sep_height = 1u16; // 分割线
         let msg_area_height = inner.height.saturating_sub(input_height + sep_height);
         let msg_area = Rect::new(inner.x, inner.y, inner.width, msg_area_height);
