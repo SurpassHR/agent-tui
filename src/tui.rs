@@ -174,15 +174,14 @@ fn translate_single_action(event: PiEvent, agent_id: &str) -> Option<Action> {
         }
 
         PiEvent::MessageEnd { message } => {
-            let agent_id = agent_id.to_string();
-            let text = message
+            // 只有错误结束时才产生状态消息；正常结束无需 UI 展示
+            message
                 .as_ref()
                 .and_then(|m| m.error_message.as_deref())
-                .unwrap_or("(message end)");
-            Some(Action::AutoRetryStatus {
-                agent_id,
-                text: format!("Message end: {}", text),
-            })
+                .map(|error_msg| Action::AutoRetryStatus {
+                    agent_id: agent_id.to_string(),
+                    text: format!("Message end: {}", error_msg),
+                })
         }
 
         PiEvent::AutoRetryStart {
@@ -221,12 +220,9 @@ fn translate_single_action(event: PiEvent, agent_id: &str) -> Option<Action> {
             }
         }
 
-        PiEvent::MessageStart { role } => {
-            let agent_id = agent_id.to_string();
-            Some(Action::AutoRetryStatus {
-                agent_id,
-                text: format!("消息开始: role={}", role),
-            })
+        PiEvent::MessageStart { .. } => {
+            // 消息开始是内部状态事件，无需 UI 展示
+            None
         }
 
         ref other => {

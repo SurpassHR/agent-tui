@@ -16,6 +16,9 @@ pub struct UiPersistState {
     pub active_agent_sessions: Vec<String>,
     /// 已展开的工作区名称列表（WorkspaceNode.name，显示名）
     pub expanded_workspaces: Vec<String>,
+    /// 手动创建 session 的名称映射（session_id → name）
+    #[serde(default)]
+    pub session_names: std::collections::HashMap<String, String>,
 }
 
 /// 获取 state.json 持久化文件路径
@@ -93,6 +96,7 @@ mod tests {
                 "--home-hr-Projects-agent-tui--".into(),
                 "--media-hr-Data-Codes-ideogram4-editor--".into(),
             ],
+            session_names: std::collections::HashMap::new(),
         };
         let json = serde_json::to_string(&state).expect("序列化失败");
         let restored: UiPersistState = serde_json::from_str(&json).expect("反序列化失败");
@@ -107,14 +111,16 @@ mod tests {
         assert!(state.active_session_id.is_none());
         assert!(state.active_agent_sessions.is_empty());
         assert!(state.expanded_workspaces.is_empty());
+        assert!(state.session_names.is_empty());
     }
 
     #[test]
     fn test_backward_compat_no_agent_sessions() {
-        // 旧版 state.json 没有 active_agent_sessions 字段
+        // 旧版 state.json 没有 active_agent_sessions 和 session_names 字段
         let old = r#"{"active_session_id":"sess-1","expanded_workspaces":[]}"#;
         let restored: UiPersistState = serde_json::from_str(old).expect("应兼容旧格式");
         assert_eq!(restored.active_session_id.unwrap(), "sess-1");
         assert!(restored.active_agent_sessions.is_empty());
+        assert!(restored.session_names.is_empty());
     }
 }
