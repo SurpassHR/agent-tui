@@ -1156,7 +1156,7 @@ pub struct App {
     pub messages: HashMap<String, Vec<ChatMessage>>,
     /// 当前活跃 agent（浏览会话 ID）
     pub active_agent: Option<String>,
-    /// 活跃会话 ID 集合（is_online 绿点依据，替代单值 agent_session_id）
+    /// 活跃会话 ID 集合（is_online 绿点依据）
     pub active_sessions: std::collections::HashSet<String>,
     /// 多 agent 进程管理器
     pub agent_manager: crate::backend::agent_manager::AgentManager,
@@ -1770,7 +1770,7 @@ impl App {
                             tracing::error!("创建会话文件失败: {} — {}", session_path.display(), e);
                             self.tui.bottom_bar.status = format!("创建失败: {}", e);
                         } else {
-                            // 切换浏览到新会话（不改变 agent_session_id）
+                            // 切换浏览到新会话（不改变 active_sessions）
                             self.active_agent = Some(session_id.clone());
                             self.messages.insert(session_id.clone(), Vec::new());
                             self.sync_messages_to_main_view(&session_id);
@@ -2997,7 +2997,7 @@ impl App {
                         name,
                         file_path: Some(fp.to_string_lossy().to_string()),
                         message_count,
-                        is_online: false, // sync_components 中会根据 agent_session_id 更新
+                        is_online: false, // sync_components 中会根据 active_sessions 更新
                     });
                 }
                 sessions.sort_by(|a, b| b.message_count.cmp(&a.message_count));
