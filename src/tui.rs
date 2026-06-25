@@ -15,10 +15,34 @@ use crate::errors::Result;
 use crate::message::ToolStatus;
 
 /// 循环切换思考级别
-fn cycle_thinking_level(current: &str) -> &'static str {
-    const LEVELS: &[&str] = &["off", "minimal", "low", "medium", "high", "xhigh"];
-    let idx = LEVELS.iter().position(|&l| l == current).unwrap_or(4); // 默认 high
-    LEVELS[(idx + 1) % LEVELS.len()]
+fn cycle_thinking_level(current: &str, thinking_level_map: Option<&std::collections::HashMap<String, Option<String>>>) -> &'static str {
+    const ALL_LEVELS: &[&str] = &["off", "minimal", "low", "medium", "high", "xhigh"];
+
+    // 根据 thinking_level_map 过滤可用级别
+    let available: Vec<&str> = if let Some(map) = thinking_level_map {
+        ALL_LEVELS
+            .iter()
+            .filter(|&&level| match map.get(level) {
+                Some(Some(_)) => true,  // 映射到具体值
+                None => true,           // 未配置，使用默认
+                Some(None) => false,    // 显式禁用
+            })
+            .copied()
+            .collect()
+    } else {
+        // 没有 thinking_level_map，使用默认（不含 xhigh）
+        vec!["off", "minimal", "low", "medium", "high"]
+    };
+
+    if available.is_empty() {
+        return "high";
+    }
+
+    let idx = available
+        .iter()
+        .position(|&l| l == current)
+        .unwrap_or(available.len() - 1);
+    available[(idx + 1) % available.len()]
 }
 
 /// 将 PiEvent 翻译为一个或多个 Action
@@ -1199,7 +1223,15 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                             let current = app.runtime.thinking_level
                                 .as_deref()
                                 .unwrap_or("high");
-                            let next = cycle_thinking_level(current);
+
+                            // 获取当前模型的 thinking_level_map
+                            let tl_map = app.tui.sidebar.providers
+                                .iter()
+                                .find(|p| Some(&p.id) == app.runtime.provider.as_ref())
+                                .and_then(|p| p.models.iter().find(|m| m.id == app.tui.sidebar.current_model))
+                                .and_then(|m| m.thinking_level_map.as_ref());
+
+                            let next = cycle_thinking_level(current, tl_map);
                             let agent_id = app.active_agent.clone().unwrap_or_default();
                             if let Some(session_client) = app.agent_manager.client_mut(&agent_id) {
                                 let _ = session_client
