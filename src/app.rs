@@ -1160,6 +1160,12 @@ pub struct App {
     pub active_sessions: std::collections::HashSet<String>,
     /// 多 agent 进程管理器
     pub agent_manager: crate::backend::agent_manager::AgentManager,
+    /// agent 事件统一转发 channel（由 run_tui 创建，供 ConnectSession 使用）
+    pub event_tx: Option<
+        tokio::sync::mpsc::UnboundedSender<
+            (String, crate::backend::event::PiEvent),
+        >,
+    >,
     /// 运行时状态
     pub runtime: AgentRuntimeState,
     /// Agent 状态
@@ -1184,6 +1190,7 @@ impl App {
             active_agent: None,
             active_sessions: std::collections::HashSet::new(),
             agent_manager: crate::backend::agent_manager::AgentManager::new(),
+            event_tx: None,
             runtime: AgentRuntimeState::default(),
             agent_status: AgentStatus::Closed,
             session: SessionInfo::default(),
@@ -1205,6 +1212,7 @@ impl App {
             active_agent: Some("default".into()),
             active_sessions: std::collections::HashSet::new(),
             agent_manager: crate::backend::agent_manager::AgentManager::new(),
+            event_tx: None,
             runtime: AgentRuntimeState::default(),
             agent_status: AgentStatus::Starting,
             session: SessionInfo::default(),

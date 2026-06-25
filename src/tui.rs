@@ -471,6 +471,27 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
     // 扫描 mcp.json，填充 MCP server 列表
     app.populate_mcps();
 
+    // 创建统一 agent 事件 channel（多 agent 事件流合并）
+    let (agent_event_tx, mut agent_event_rx) =
+        tokio::sync::mpsc::unbounded_channel::<(
+            String,
+            crate::backend::event::PiEvent,
+        )>();
+    app.event_tx = Some(agent_event_tx.clone());
+
+    // 将当前 pi 进程的 event_rx 转发到统一 channel
+    let (dummy_tx, dummy_rx) = tokio::sync::mpsc::unbounded_channel();
+    let original_rx = std::mem::replace(&mut client.event_rx, dummy_rx);
+    drop(dummy_tx); // close dummy_rx so it won't be used
+    tokio::spawn(async move {
+        let mut rx = original_rx;
+        while let Some(event) = rx.recv().await {
+            if agent_event_tx.send(("default".to_string(), event)).is_err() {
+                break;
+            }
+        }
+    });
+
     let agent_id = app.active_agent.clone().unwrap_or_default();
     tracing::info!("TUI 主循环开始，active_agent={:?}", agent_id);
     let mut input_buffer = String::new();
@@ -492,18 +513,6 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
         tokio::select! {
             // 定时刷新
             _ = ticker.tick() => {
-                // 处理 pi 事件（支持多 Action 返回，如 ContentUpdate + delta）
-                while let Ok(event) = client.event_rx.try_recv() {
-                    tracing::debug!("EVENT: {:?}", std::mem::discriminant(&event));
-                    let actions = translate_pi_events(event, &agent_id);
-                    tracing::debug!("  -> {} actions", actions.len());
-                    for (i, action) in actions.into_iter().enumerate() {
-                        tracing::debug!("  ACTION[{}]: {:?}", i, std::mem::discriminant(&action));
-                        if let Err(e) = app.handle_action(action).await {
-                            tracing::error!("handle_action error: {}", e);
-                        }
-                    }
-                }
                 // 同步输入缓冲区到 main_view
                 app.tui.main_view.input_buffer.clone_from(&input_buffer);
                 // 检查模型列表拉取结果
@@ -584,6 +593,16 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                     }
                 });
                 let _ = app.handle_action(Action::RuntimeStateUpdate(app.runtime.clone())).await;
+            }
+
+            // 多 agent 统一事件流
+            Some((agent_id, event)) = agent_event_rx.recv() => {
+                let actions = translate_pi_events(event, &agent_id);
+                for action in actions {
+                    if let Err(e) = app.handle_action(action).await {
+                        tracing::error!("handle_action error: {}", e);
+                    }
+                }
             }
 
             // 键盘 & 鼠标事件（EventStream 是异步的，不阻塞）
