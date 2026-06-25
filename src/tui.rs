@@ -473,10 +473,7 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
 
     // 创建统一 agent 事件 channel（多 agent 事件流合并）
     let (agent_event_tx, mut agent_event_rx) =
-        tokio::sync::mpsc::unbounded_channel::<(
-            String,
-            crate::backend::event::PiEvent,
-        )>();
+        tokio::sync::mpsc::unbounded_channel::<(String, crate::backend::event::PiEvent)>();
     app.event_tx = Some(agent_event_tx.clone());
 
     // 从持久化状态恢复活跃 agent 会话
@@ -484,16 +481,23 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
     if !persist_state.active_agent_sessions.is_empty() {
         let cwd = std::env::current_dir().unwrap_or_default();
         for session_id in &persist_state.active_agent_sessions {
-            if let Some(file_path) = app.tui.workspaces.iter().find_map(|ws| {
-                ws.sessions.iter().find(|s| s.id == *session_id)
-            }).and_then(|s| s.file_path.clone()) {
+            if let Some(file_path) = app
+                .tui
+                .workspaces
+                .iter()
+                .find_map(|ws| ws.sessions.iter().find(|s| s.id == *session_id))
+                .and_then(|s| s.file_path.clone())
+            {
                 tracing::info!("恢复活跃 agent 会话: {}", session_id);
-                let _ = app.agent_manager.spawn(
-                    session_id.clone(),
-                    std::path::PathBuf::from(&file_path),
-                    cwd.clone(),
-                    agent_event_tx.clone(),
-                ).await;
+                let _ = app
+                    .agent_manager
+                    .spawn(
+                        session_id.clone(),
+                        std::path::PathBuf::from(&file_path),
+                        cwd.clone(),
+                        agent_event_tx.clone(),
+                    )
+                    .await;
                 app.active_sessions.insert(session_id.clone());
             }
         }
@@ -1216,15 +1220,26 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                             app.tui.confirm_delete = None;
                         }
 
-                        // ── Sidebar + ActiveSession 子区：↑/↓（仅 title 可选中）──
+                        // ── Sidebar + ActiveSession 子区：↑/↓ ──
                         _ if *focus == crate::app::FocusPanel::Sidebar
                             && app.tui.sidebar_subsection
                                 == crate::app::SidebarSubsection::ActiveSession =>
                         {
+                            // 计算活跃会话数量作为 cursor 上限
+                            let active_count = app.tui.workspaces.iter()
+                                .flat_map(|ws| &ws.sessions)
+                                .filter(|s| s.is_online)
+                                .count();
                             match key.code {
-                                crossterm::event::KeyCode::Up
-                                | crossterm::event::KeyCode::Down => {
-                                    // 仅 title 可选中（cursor 始终为 0），待后续增加触发动作
+                                crossterm::event::KeyCode::Up => {
+                                    if app.tui.active_session_cursor > 0 {
+                                        app.tui.active_session_cursor -= 1;
+                                    }
+                                }
+                                crossterm::event::KeyCode::Down => {
+                                    if app.tui.active_session_cursor < active_count {
+                                        app.tui.active_session_cursor += 1;
+                                    }
                                 }
                                 _ => {}
                             }

@@ -144,23 +144,40 @@ impl Sidebar {
     }
 
     /// 活跃会话行
-    fn render_active_session(&self, theme: &Theme) -> Line<'static> {
-        let name = if self.active_session.is_empty() {
-            "暂无活跃会话"
-        } else {
-            &self.active_session
-        };
-        let session_id = if self.session_id.is_empty() {
-            String::new()
-        } else {
-            format!("  {}", &self.session_id[..self.session_id.len().min(12)])
-        };
-        Line::from(vec![
-            Span::from("● ").fg(theme.success),
-            Span::from(name.to_string()).fg(theme.success).bold(),
-            Span::from(session_id).fg(theme.border_dim),
-            Span::from(format!("  {}条", self.message_count)).fg(theme.text_dim),
-        ])
+    fn render_active_sessions(&self, theme: &Theme) -> Vec<Line<'static>> {
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        let mut idx = 1usize;
+        for ws in &self.workspaces {
+            for s in &ws.sessions {
+                if !s.is_online {
+                    continue;
+                }
+                let is_selected = self.has_focus
+                    && self.subsection == SidebarSubsection::ActiveSession
+                    && self.active_session_cursor == idx;
+                let (fg, bg) = if is_selected {
+                    (theme.selection_fg, theme.highlight_bg)
+                } else {
+                    (theme.success, theme.bg)
+                };
+                let sid_short = &s.id[..s.id.len().min(12)];
+                let msg_str = format!("{}条", s.message_count);
+                lines.push(
+                    Line::from(vec![
+                        "● ".fg(theme.success),
+                        Span::from(s.name.clone()).fg(fg).bold(),
+                        Span::from(format!("  {}", sid_short)).fg(theme.border_dim),
+                        Span::from(format!(" {:>4}", msg_str)).fg(theme.text_dim),
+                    ])
+                    .style(Style::default().bg(bg)),
+                );
+                idx += 1;
+            }
+        }
+        if lines.is_empty() {
+            lines.push(Line::from("○ 暂无活跃会话".to_string().fg(theme.text_dim)));
+        }
+        lines
     }
 
     /// 生成工作区树的所有 Line（不含头部 "工作区" 标题）
@@ -516,9 +533,10 @@ impl Component for Sidebar {
         );
         f.render_widget(block, area);
 
-        // ── 计算各区域高度 ──
-        let top_h = 3u16; // ACTIVE SESSION 标题 + 会话行 + 空行
-                          // 统一用 14 行上限，footer 内容实际撑多高就是多高，不因子区切换跳动
+        // ── 先构建活跃会话区内容以确定高度 ──
+        let active_sess_lines = self.render_active_sessions(theme);
+        let top_h = 1u16 + active_sess_lines.len() as u16 + 1u16; // title + 会话行 + 空行
+                                                                  // 统一用 14 行上限，footer 内容实际撑多高就是多高，不因子区切换跳动
         const MAX_FOOTER: u16 = 14;
         let max_footer = MAX_FOOTER;
         let provisional = self.render_footer(padded.width, max_footer, theme);
@@ -557,7 +575,9 @@ impl Component for Sidebar {
         } else {
             Line::from(" ACTIVE SESSION".to_string().fg(theme.heading).bold())
         };
-        let top_lines = vec![top_title, self.render_active_session(theme), Line::from("")];
+        let mut top_lines = vec![top_title];
+        top_lines.extend(active_sess_lines);
+        top_lines.push(Line::from(""));
 
         // ── 中部：工作区树（带内部滚动） ──
         let mut ws_lines: Vec<Line<'static>> = Vec::new();

@@ -1161,11 +1161,8 @@ pub struct App {
     /// 多 agent 进程管理器
     pub agent_manager: crate::backend::agent_manager::AgentManager,
     /// agent 事件统一转发 channel（由 run_tui 创建，供 ConnectSession 使用）
-    pub event_tx: Option<
-        tokio::sync::mpsc::UnboundedSender<
-            (String, crate::backend::event::PiEvent),
-        >,
-    >,
+    pub event_tx:
+        Option<tokio::sync::mpsc::UnboundedSender<(String, crate::backend::event::PiEvent)>>,
     /// 运行时状态
     pub runtime: AgentRuntimeState,
     /// Agent 状态
@@ -1608,9 +1605,7 @@ impl App {
                             .tui
                             .workspaces
                             .iter()
-                            .find_map(|ws| {
-                                ws.sessions.iter().find(|s| s.id == session_id)
-                            })
+                            .find_map(|ws| ws.sessions.iter().find(|s| s.id == session_id))
                             .map(|s| s.name.clone())
                             .unwrap_or_default();
                         self.session.name = Some(name.clone());
@@ -3730,6 +3725,20 @@ mod tests {
         app.session.name = Some("demo-session".to_string());
         app.runtime.model_name = Some("deepseek-v4-flash".to_string());
         app.runtime.provider = Some("openrouter".to_string());
+        // 设置工作区树含活跃会话（供 ACTIVE SESSION 区渲染）
+        app.active_sessions.insert("demo-session".into());
+        app.tui.workspaces.push(WorkspaceNode {
+            cwd: "/test".into(),
+            display_name: "test".into(),
+            sessions: vec![SessionNode {
+                id: "demo-session".into(),
+                name: "demo-session".into(),
+                file_path: None,
+                message_count: 0,
+                is_online: true,
+            }],
+            expanded: false,
+        });
 
         let backend = TestBackend::new(120, 32);
         let mut terminal = Terminal::new(backend).expect("创建测试终端失败");
