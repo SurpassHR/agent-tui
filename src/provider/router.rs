@@ -85,19 +85,9 @@ async fn handle_chat_completions(
         }
     };
 
-    tracing::info!(
-        "收到 POST /v1/chat/completions | provider={}",
-        provider.id,
-    );
+    tracing::info!("收到 POST /v1/chat/completions | provider={}", provider.id,);
 
-    standard_chat_proxy(
-        &state.http,
-        &provider,
-        headers,
-        body,
-        &config,
-    )
-    .await
+    standard_chat_proxy(&state.http, &provider, headers, body, &config).await
 }
 
 /// POST /v1/responses
@@ -113,14 +103,7 @@ async fn handle_responses(
             return (StatusCode::NOT_FOUND, "{\"error\":\"no active provider\"}").into_response();
         }
     };
-    standard_chat_proxy(
-        &state.http,
-        &provider,
-        headers,
-        body,
-        &config,
-    )
-    .await
+    standard_chat_proxy(&state.http, &provider, headers, body, &config).await
 }
 
 /// POST /v1/messages
@@ -136,14 +119,7 @@ async fn handle_messages(
             return (StatusCode::NOT_FOUND, "{\"error\":\"no active provider\"}").into_response();
         }
     };
-    standard_chat_proxy(
-        &state.http,
-        &provider,
-        headers,
-        body,
-        &config,
-    )
-    .await
+    standard_chat_proxy(&state.http, &provider, headers, body, &config).await
 }
 
 /// POST /v1/models/{*path}（Gemini generateContent 等操作）
@@ -160,14 +136,7 @@ async fn handle_gemini(
             return (StatusCode::NOT_FOUND, "{\"error\":\"no active provider\"}").into_response();
         }
     };
-    standard_chat_proxy(
-        &state.http,
-        &provider,
-        headers,
-        body,
-        &config,
-    )
-    .await
+    standard_chat_proxy(&state.http, &provider, headers, body, &config).await
 }
 
 /// GET /v1/models
@@ -204,10 +173,10 @@ async fn handle_models(State(state): State<Arc<AppState>>) -> Response {
         .into_response()
 }
 
-/// 标准模式代理：读 model 字段 → 匹配 provider → 根据 endpoint_type 构造目标路径 → 转发 + 注入 API key
+/// 标准模式代理：读 model 字段 → 优先用 handler 传入的 provider → 根据 endpoint_type 构造目标路径 → 转发 + 注入 API key
 async fn standard_chat_proxy(
     client: &Client,
-    _provider: &super::ProviderInfo,
+    provider: &super::ProviderInfo,
     _headers: HeaderMap,
     body: Body,
     config: &ProviderConfig,
@@ -236,20 +205,24 @@ async fn standard_chat_proxy(
         }
     };
 
-    // 查找 model 对应的 provider
-    let target = config.find_provider_by_model(&model);
-    let target = match target {
-        Some(p) => p.clone(),
-        None => {
-            tracing::warn!(
-                "POST /v1/chat/completions — model={} 未匹配到 provider",
-                model
-            );
-            return (
-                StatusCode::NOT_FOUND,
-                format!("{{\"error\":\"unknown model: {}\"}}", model),
-            )
-                .into_response();
+    // 优先用 handler 传入的 provider（UI 侧选中的），验证它是否包含请求的 model
+    // 回退到 config.find_provider_by_model（也会优先 current_provider 索引）
+    let target = if provider.enabled && provider.models.iter().any(|m| m.id == model) {
+        provider.clone()
+    } else {
+        match config.find_provider_by_model(&model) {
+            Some(p) => p.clone(),
+            None => {
+                tracing::warn!(
+                    "POST /v1/chat/completions — model={} 未匹配到 provider",
+                    model
+                );
+                return (
+                    StatusCode::NOT_FOUND,
+                    format!("{{\"error\":\"unknown model: {}\"}}", model),
+                )
+                    .into_response();
+            }
         }
     };
 
@@ -261,11 +234,7 @@ async fn standard_chat_proxy(
         _ => "/v1/chat/completions".to_string(),
     };
 
-    let target_url = format!(
-        "{}{}",
-        target.base_url.trim_end_matches('/'),
-        path
-    );
+    let target_url = format!("{}{}", target.base_url.trim_end_matches('/'), path);
 
     tracing::info!(
         "POST {} — model={} → provider={} → {} (endpoint={})",

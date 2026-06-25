@@ -641,6 +641,7 @@ impl TuiState {
         let cfg = crate::provider::ProviderConfig {
             port: self.router_port,
             current_model: Some(self.current_model.clone()),
+            current_provider: self.active_provider_idx,
             providers: self.providers.clone(),
         };
         crate::provider::ProviderConfig::save(&path, &cfg);
@@ -1613,6 +1614,21 @@ impl App {
                 {
                     Ok(()) => {
                         self.active_sessions.insert(session_id.clone());
+                        // 发送 set_model 给新 pi 进程
+                        let model = self.tui.current_model.clone();
+                        if !model.is_empty() {
+                            if let Some(session_client) =
+                                self.agent_manager.client_mut(&session_id)
+                            {
+                                let _ = session_client
+                                    .notify(serde_json::json!({
+                                        "type": "set_model",
+                                        "provider": "local",
+                                        "modelId": model,
+                                    }))
+                                    .await;
+                            }
+                        }
                         // 从工作区树获取会话名称
                         let name = self
                             .tui
@@ -1777,7 +1793,28 @@ impl App {
                             session_id,
                             session_path.display()
                         );
-                        // 不自行写文件，由 pi agent spawn 时创建正确格式的 session 文件
+                        // 预创建 JSONL 文件（写入 session metadata），确保重启后 populate_workspaces 可发现
+                        // pi agent spawn 后也会写入完整格式，此处仅保证文件立刻存在
+                        if let Some(parent) = session_path.parent() {
+                            let _ = std::fs::create_dir_all(parent);
+                        }
+                        let header = serde_json::json!({
+                            "type": "session",
+                            "version": 3,
+                            "id": session_id,
+                            "timestamp": format!(
+                                "2026-06-25T00:00:00.{}Z",
+                                std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_millis()
+                                    % 1000
+                            ),
+                            "cwd": ws.cwd,
+                        });
+                        if let Ok(header_str) = serde_json::to_string(&header) {
+                            let _ = std::fs::write(&session_path, format!("{}\n", header_str));
+                        }
                         let cwd = std::env::current_dir().unwrap_or_default();
                         let event_tx = self.event_tx.clone().unwrap_or_else(|| {
                             let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1785,33 +1822,38 @@ impl App {
                         });
                         match self
                             .agent_manager
-                            .spawn(
-                                session_id.clone(),
-                                session_path.clone(),
-                                cwd,
-                                event_tx,
-                            )
+                            .spawn(session_id.clone(), session_path.clone(), cwd, event_tx)
                             .await
                         {
                             Ok(()) => {
                                 tracing::info!("CreateSession: spawn 成功");
                                 self.active_sessions.insert(session_id.clone());
+                                // 发送 set_model 给新 pi 进程（否则 pi 不知道用哪个模型）
+                                let model = self.tui.current_model.clone();
+                                if !model.is_empty() {
+                                    if let Some(session_client) =
+                                        self.agent_manager.client_mut(&session_id)
+                                    {
+                                        let _ = session_client
+                                            .notify(serde_json::json!({
+                                                "type": "set_model",
+                                                "provider": "local",
+                                                "modelId": model,
+                                            }))
+                                            .await;
+                                    }
+                                }
                                 // 名称暂存到 session_names（供 extract_session_name 查找）
-                                self.tui.session_names.insert(
-                                    session_id.clone(),
-                                    name.clone(),
-                                );
+                                self.tui
+                                    .session_names
+                                    .insert(session_id.clone(), name.clone());
                                 // 直接在工作区数据结构中添加新 session 节点
                                 // （不依赖 populate_workspaces 文件扫描，pi 可能还没写文件）
-                                if let Some(ws) =
-                                    self.tui.workspaces.get_mut(workspace_index)
-                                {
+                                if let Some(ws) = self.tui.workspaces.get_mut(workspace_index) {
                                     ws.sessions.push(SessionNode {
                                         id: session_id.clone(),
                                         name: name.clone(),
-                                        file_path: Some(
-                                            session_path.to_string_lossy().to_string(),
-                                        ),
+                                        file_path: Some(session_path.to_string_lossy().to_string()),
                                         message_count: 0,
                                         is_online: true,
                                     });
@@ -1823,13 +1865,11 @@ impl App {
                                 self.sync_components();
                                 // 持久化：关闭后重启时恢复该会话
                                 crate::persistence::save(&self.build_persist_state());
-                                self.tui.bottom_bar.status =
-                                    format!("已创建会话: {}", name);
+                                self.tui.bottom_bar.status = format!("已创建会话: {}", name);
                             }
                             Err(e) => {
                                 tracing::error!("创建会话失败: {}", e);
-                                self.tui.bottom_bar.status =
-                                    format!("创建失败: {}", e);
+                                self.tui.bottom_bar.status = format!("创建失败: {}", e);
                             }
                         }
                     } else {
@@ -2103,7 +2143,10 @@ impl App {
     pub(crate) fn sync_components(&mut self) {
         // 同步 forwarding_agent_tx（确保默认 pi 的事件转发到当前的 active_agent）
         if let Some(ref tx) = self.forwarding_agent_tx {
-            let new_id = self.active_agent.clone().unwrap_or_else(|| "default".to_string());
+            let new_id = self
+                .active_agent
+                .clone()
+                .unwrap_or_else(|| "default".to_string());
             let _ = tx.send(new_id);
         }
 
@@ -2261,10 +2304,7 @@ impl App {
                 let popup_area = crate::components::popup::centered_rect(65, 55, f.area());
                 f.render_widget(ratatui::widgets::Clear, popup_area);
                 let block = ratatui::widgets::Block::default()
-                    .title(format!(
-                        " ◆ {} ",
-                        p.name
-                    ))
+                    .title(format!(" ◆ {} ", p.name))
                     .borders(ratatui::widgets::Borders::ALL)
                     .border_type(ratatui::widgets::BorderType::Plain)
                     .border_style(theme.border);
@@ -3073,15 +3113,9 @@ impl App {
                         .file_stem()
                         .map(|n| n.to_string_lossy().to_string())
                         .unwrap_or_default();
-                    let name = self
-                        .tui
-                        .session_names
-                        .get(&id)
-                        .cloned()
-                        .unwrap_or_else(|| {
-                            extract_session_name(fp)
-                                .unwrap_or_else(|| "New Session".to_string())
-                        });
+                    let name = self.tui.session_names.get(&id).cloned().unwrap_or_else(|| {
+                        extract_session_name(fp).unwrap_or_else(|| "New Session".to_string())
+                    });
                     let message_count = if let Ok(content) = std::fs::read_to_string(fp) {
                         content.lines().count()
                     } else {
@@ -4005,7 +4039,7 @@ mod tests {
         let mut state = TuiState::new();
         state.providers = vec![
             crate::provider::ProviderInfo {
-            endpoint_type: "openai_compat".into(),
+                endpoint_type: "openai_compat".into(),
                 id: "a".into(),
                 name: "A".into(),
                 enabled: true,
@@ -4014,7 +4048,7 @@ mod tests {
                 models: vec![],
             },
             crate::provider::ProviderInfo {
-            endpoint_type: "openai_compat".into(),
+                endpoint_type: "openai_compat".into(),
                 id: "b".into(),
                 name: "B".into(),
                 enabled: true,
@@ -4023,7 +4057,7 @@ mod tests {
                 models: vec![],
             },
             crate::provider::ProviderInfo {
-            endpoint_type: "openai_compat".into(),
+                endpoint_type: "openai_compat".into(),
                 id: "c".into(),
                 name: "C".into(),
                 enabled: true,
@@ -4213,7 +4247,7 @@ mod tests {
         let mut state = TuiState::new();
         state.providers = vec![
             crate::provider::ProviderInfo {
-            endpoint_type: "openai_compat".into(),
+                endpoint_type: "openai_compat".into(),
                 id: "elysiver".into(),
                 name: "Elysiver".into(),
                 enabled: true,
@@ -4229,7 +4263,7 @@ mod tests {
                 }],
             },
             crate::provider::ProviderInfo {
-            endpoint_type: "openai_compat".into(),
+                endpoint_type: "openai_compat".into(),
                 id: "deepseek".into(),
                 name: "DeepSeek".into(),
                 enabled: true,
@@ -4272,7 +4306,7 @@ mod tests {
         let mut state = TuiState::new();
         state.providers = vec![
             crate::provider::ProviderInfo {
-            endpoint_type: "openai_compat".into(),
+                endpoint_type: "openai_compat".into(),
                 id: "a".into(),
                 name: "A".into(),
                 enabled: true,
@@ -4288,7 +4322,7 @@ mod tests {
                 }],
             },
             crate::provider::ProviderInfo {
-            endpoint_type: "openai_compat".into(),
+                endpoint_type: "openai_compat".into(),
                 id: "b".into(),
                 name: "B".into(),
                 enabled: true,
@@ -4383,7 +4417,7 @@ mod tests {
         let mut state = TuiState::new();
         state.providers = vec![
             crate::provider::ProviderInfo {
-            endpoint_type: "openai_compat".into(),
+                endpoint_type: "openai_compat".into(),
                 id: "a".into(),
                 name: "A".into(),
                 enabled: true,
@@ -4399,7 +4433,7 @@ mod tests {
                 }],
             },
             crate::provider::ProviderInfo {
-            endpoint_type: "openai_compat".into(),
+                endpoint_type: "openai_compat".into(),
                 id: "b".into(),
                 name: "B".into(),
                 enabled: true,
@@ -4484,7 +4518,7 @@ mod tests {
         state.persistence_disabled = true;
         state.providers = vec![
             crate::provider::ProviderInfo {
-            endpoint_type: "openai_compat".into(),
+                endpoint_type: "openai_compat".into(),
                 id: "a".into(),
                 name: "A".into(),
                 enabled: true,
@@ -4500,7 +4534,7 @@ mod tests {
                 }],
             },
             crate::provider::ProviderInfo {
-            endpoint_type: "openai_compat".into(),
+                endpoint_type: "openai_compat".into(),
                 id: "b".into(),
                 name: "B".into(),
                 enabled: true,
@@ -4540,7 +4574,7 @@ mod tests {
         state.current_model = "shared".into();
         state.providers = vec![
             crate::provider::ProviderInfo {
-            endpoint_type: "openai_compat".into(),
+                endpoint_type: "openai_compat".into(),
                 id: "first".into(),
                 name: "First".into(),
                 enabled: true,
@@ -4556,7 +4590,7 @@ mod tests {
                 }],
             },
             crate::provider::ProviderInfo {
-            endpoint_type: "openai_compat".into(),
+                endpoint_type: "openai_compat".into(),
                 id: "second".into(),
                 name: "Second".into(),
                 enabled: true,
@@ -4585,7 +4619,7 @@ mod tests {
         state.current_model = "model-b".into();
         state.providers = vec![
             crate::provider::ProviderInfo {
-            endpoint_type: "openai_compat".into(),
+                endpoint_type: "openai_compat".into(),
                 id: "a".into(),
                 name: "A".into(),
                 enabled: true,
@@ -4601,7 +4635,7 @@ mod tests {
                 }],
             },
             crate::provider::ProviderInfo {
-            endpoint_type: "openai_compat".into(),
+                endpoint_type: "openai_compat".into(),
                 id: "b".into(),
                 name: "B".into(),
                 enabled: true,
@@ -4629,7 +4663,7 @@ mod tests {
         state.current_model = "shared".into();
         state.providers = vec![
             crate::provider::ProviderInfo {
-            endpoint_type: "openai_compat".into(),
+                endpoint_type: "openai_compat".into(),
                 id: "first".into(),
                 name: "First".into(),
                 enabled: true,
@@ -4645,7 +4679,7 @@ mod tests {
                 }],
             },
             crate::provider::ProviderInfo {
-            endpoint_type: "openai_compat".into(),
+                endpoint_type: "openai_compat".into(),
                 id: "second".into(),
                 name: "Second".into(),
                 enabled: true,
@@ -4710,7 +4744,7 @@ mod tests {
         state.current_model = "m1".into();
         state.providers = vec![
             crate::provider::ProviderInfo {
-            endpoint_type: "openai_compat".into(),
+                endpoint_type: "openai_compat".into(),
                 id: "p0".into(),
                 name: "P0".into(),
                 enabled: true,
@@ -4726,7 +4760,7 @@ mod tests {
                 }],
             },
             crate::provider::ProviderInfo {
-            endpoint_type: "openai_compat".into(),
+                endpoint_type: "openai_compat".into(),
                 id: "p1".into(),
                 name: "P1".into(),
                 enabled: true,
@@ -5038,8 +5072,7 @@ mod tests {
         let initial_id = "default".to_string();
 
         // 创建 watch channel（模拟 run_tui 中的设置）
-        let (forwarding_tx, forwarding_rx) =
-            tokio::sync::watch::channel(initial_id.clone());
+        let (forwarding_tx, forwarding_rx) = tokio::sync::watch::channel(initial_id.clone());
         app.forwarding_agent_tx = Some(forwarding_tx);
 
         assert_eq!(*forwarding_rx.borrow(), initial_id);
@@ -5065,8 +5098,7 @@ mod tests {
         let session_id = "restored-session-abc".to_string();
 
         // 模拟 run_tui 中的初始化：设置 forwarding_agent_tx
-        let (forwarding_tx, _forwarding_rx) =
-            tokio::sync::watch::channel(session_id.clone());
+        let (forwarding_tx, _forwarding_rx) = tokio::sync::watch::channel(session_id.clone());
         app.forwarding_agent_tx = Some(forwarding_tx);
         app.active_agent = Some(session_id.clone());
 

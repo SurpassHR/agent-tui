@@ -474,6 +474,21 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                     )
                     .await;
                 app.active_sessions.insert(session_id.clone());
+                // 发送 set_model 给恢复的 pi 进程（否则 pi 不知道用哪个模型）
+                let model = app.tui.current_model.clone();
+                if !model.is_empty() {
+                    if let Some(session_client) =
+                        app.agent_manager.client_mut(session_id)
+                    {
+                        let _ = session_client
+                            .notify(serde_json::json!({
+                                "type": "set_model",
+                                "provider": "local",
+                                "modelId": model,
+                            }))
+                            .await;
+                    }
+                }
             }
         }
         app.sync_components();
@@ -481,7 +496,10 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
 
     // 将当前 pi 进程的 event_rx 转发到统一 channel
     // 使用 watch channel 以便在 active_agent 变化时动态更新转发目标。
-    let forwarding_agent_id = app.active_agent.clone().unwrap_or_else(|| "default".to_string());
+    let forwarding_agent_id = app
+        .active_agent
+        .clone()
+        .unwrap_or_else(|| "default".to_string());
     let (forwarding_tx, forwarding_rx) = tokio::sync::watch::channel(forwarding_agent_id);
     app.forwarding_agent_tx = Some(forwarding_tx);
 
@@ -1469,7 +1487,7 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                                 if !model_id.is_empty() {
                                     // 保存到磁盘并同步到 router 共享内存配置
                                     app.tui.sync_provider_config();
-                                    // 通知 pi 切换模型
+                                    // 通知初始 pi 切换模型
                                     let _ = client.request(
                                         serde_json::json!({
                                             "type": "set_model",
@@ -1478,6 +1496,14 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                                         }),
                                         std::time::Duration::from_secs(5),
                                     ).await;
+                                    // 同时通知所有 agent_manager 中的 pi 进程
+                                    for proc in app.agent_manager.agents_mut() {
+                                        let _ = proc.client.notify(serde_json::json!({
+                                            "type": "set_model",
+                                            "provider": "local",
+                                            "modelId": model_id,
+                                        })).await;
+                                    }
                                 }
                             }
                         }
@@ -1680,12 +1706,28 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                                             ))
                                             .await
                                             .ok();
-                                            let _ = client
-                                                .notify(serde_json::json!({
-                                                    "type": "prompt",
-                                                    "message": trimmed,
-                                                }))
-                                                .await;
+                                            // 路由到当前活跃 session 的 pi 进程（非默认 session 时用 agent_manager 中的客户端）
+                                            let agent_id = app
+                                                .active_agent
+                                                .clone()
+                                                .unwrap_or_else(|| "default".to_string());
+                                            if let Some(session_client) =
+                                                app.agent_manager.client_mut(&agent_id)
+                                            {
+                                                let _ = session_client
+                                                    .notify(serde_json::json!({
+                                                        "type": "prompt",
+                                                        "message": trimmed,
+                                                    }))
+                                                    .await;
+                                            } else {
+                                                let _ = client
+                                                    .notify(serde_json::json!({
+                                                        "type": "prompt",
+                                                        "message": trimmed,
+                                                    }))
+                                                    .await;
+                                            }
                                         }
                                     }
                                 }

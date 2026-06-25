@@ -17,6 +17,9 @@ pub struct ProviderConfig {
     pub port: u16,
     /// 当前选中模型（仅 UI 初始态）
     pub current_model: Option<String>,
+    /// 当前选中 provider 索引（对应 TuiState.active_provider_idx）
+    #[serde(default)]
+    pub current_provider: Option<usize>,
     /// Provider 列表
     pub providers: Vec<ProviderInfo>,
 }
@@ -131,6 +134,7 @@ impl ProviderConfig {
         ProviderConfig {
             port: default_port(),
             current_model: None,
+            current_provider: None,
             providers: Vec::new(),
         }
     }
@@ -148,9 +152,25 @@ impl ProviderConfig {
         }
     }
 
-    /// 获取活跃 provider（按 current_model 匹配，跳过 disabled）
+    /// 获取活跃 provider（优先按 current_provider 索引，回退按 current_model 匹配，跳过 disabled）
     pub fn active_provider(&self) -> Option<&ProviderInfo> {
-        // 按 current_model 匹配
+        // 优先按 current_provider 索引
+        if let Some(idx) = self.current_provider {
+            if let Some(p) = self.providers.get(idx) {
+                if p.enabled {
+                    // 验证 current_model 确实属于此 provider
+                    if let Some(ref model) = self.current_model {
+                        if p.models.iter().any(|m| m.id == *model) {
+                            return Some(p);
+                        }
+                        // current_model 不属于此 provider，继续回退
+                    } else {
+                        return Some(p);
+                    }
+                }
+            }
+        }
+        // 回退：按 current_model 匹配
         if let Some(ref model) = self.current_model {
             for p in &self.providers {
                 if p.enabled && p.models.iter().any(|m| m.id == *model) {
@@ -161,8 +181,17 @@ impl ProviderConfig {
         None
     }
 
-    /// 根据 model id 查找 provider
+    /// 根据 model id 查找 provider（优先按 current_provider 索引）
     pub fn find_provider_by_model(&self, model: &str) -> Option<&ProviderInfo> {
+        // 优先按 current_provider 索引
+        if let Some(idx) = self.current_provider {
+            if let Some(p) = self.providers.get(idx) {
+                if p.enabled && p.models.iter().any(|m| m.id == model) {
+                    return Some(p);
+                }
+            }
+        }
+        // 回退：遍历查找
         self.providers
             .iter()
             .find(|p| p.models.iter().any(|m| m.id == model))
@@ -195,6 +224,7 @@ impl Default for ProviderConfig {
         Self {
             port: default_port(),
             current_model: None,
+            current_provider: None,
             providers: Vec::new(),
         }
     }
@@ -271,11 +301,7 @@ pub fn regenerate_local_provider_ts(config: &ProviderConfig) {
     if let Err(e) = std::fs::write(ext_dir.join("local-provider.ts"), &ts_content) {
         tracing::warn!("重新生成 local-provider.ts 失败: {}", e);
     } else {
-        let model_count: usize = config
-            .providers
-            .iter()
-            .map(|p| p.models.len())
-            .sum();
+        let model_count: usize = config.providers.iter().map(|p| p.models.len()).sum();
         tracing::info!(
             "local-provider.ts 已更新（{} providers, {} models）",
             config.providers.len(),
