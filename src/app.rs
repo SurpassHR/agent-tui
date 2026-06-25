@@ -4037,7 +4037,7 @@ mod tests {
         state.focus_panel = FocusPanel::Sidebar;
         state.sidebar_subsection = SidebarSubsection::Model;
         state.model_cursor = 1; // 第一个 model（title=0）
-        // 当前在 deepseek Provider (索引 1) 的 MODEL 区
+                                // 当前在 deepseek Provider (索引 1) 的 MODEL 区
         state.active_provider_idx = Some(1);
         state.current_model = "shared-model".into();
 
