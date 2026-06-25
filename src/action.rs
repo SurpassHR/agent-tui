@@ -86,6 +86,10 @@ pub enum Action {
     /// 退出详情视图
     ExitBlock,
 
+    // --- 思考级别控制 ---
+    /// 设置思考级别（通过 UI 或快捷键触发）
+    SetThinkingLevel(String),
+
     // --- UI 交互控制 ---
     /// 切换浮窗显示状态
     TogglePopup,
