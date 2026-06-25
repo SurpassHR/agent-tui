@@ -95,8 +95,13 @@ pub enum Action {
     ToggleWorkspace(usize),
     /// 选择指定 ID 的会话（浏览模式，仅加载消息）
     SelectSession(String),
-    /// 连接到指定 ID 的会话（启动/切换 pi agent 进程）
-    ConnectSession(String),
+    /// 为指定会话启动 pi agent 进程
+    ConnectSession {
+        session_id: String,
+        file_path: String,
+    },
+    /// 停止指定会话的 pi agent 进程
+    DisconnectSession(String),
     /// 侧边栏焦点移动（正=下，负=上）
     SidebarMove(i32),
     /// 面板焦点循环（1=向右，-1=向左）

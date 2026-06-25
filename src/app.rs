@@ -1156,10 +1156,10 @@ pub struct App {
     pub messages: HashMap<String, Vec<ChatMessage>>,
     /// 当前活跃 agent（浏览会话 ID）
     pub active_agent: Option<String>,
-    /// pi agent 进程所在的会话 ID（活动会话，is_online = true 的依据）
-    pub agent_session_id: Option<String>,
-    /// pi agent 进程的会话文件路径（用于 is_online 精确匹配）
-    pub agent_session_file: Option<String>,
+    /// 活跃会话 ID 集合（is_online 绿点依据，替代单值 agent_session_id）
+    pub active_sessions: std::collections::HashSet<String>,
+    /// 多 agent 进程管理器
+    pub agent_manager: crate::backend::agent_manager::AgentManager,
     /// 运行时状态
     pub runtime: AgentRuntimeState,
     /// Agent 状态
@@ -1182,8 +1182,8 @@ impl App {
             use_rpc: false,
             messages: HashMap::new(),
             active_agent: None,
-            agent_session_id: None,
-            agent_session_file: None,
+            active_sessions: std::collections::HashSet::new(),
+            agent_manager: crate::backend::agent_manager::AgentManager::new(),
             runtime: AgentRuntimeState::default(),
             agent_status: AgentStatus::Closed,
             session: SessionInfo::default(),
@@ -1203,8 +1203,8 @@ impl App {
             use_rpc: true,
             messages: HashMap::new(),
             active_agent: Some("default".into()),
-            agent_session_id: None,
-            agent_session_file: None,
+            active_sessions: std::collections::HashSet::new(),
+            agent_manager: crate::backend::agent_manager::AgentManager::new(),
             runtime: AgentRuntimeState::default(),
             agent_status: AgentStatus::Starting,
             session: SessionInfo::default(),
@@ -1572,39 +1572,35 @@ impl App {
                 crate::persistence::save(&self.build_persist_state());
             }
 
-            Action::ConnectSession(session_id) => {
+            Action::ConnectSession {
+                session_id,
+                file_path,
+            } => {
                 tracing::info!("连接到会话: {}", session_id);
-                // 查找 session 的 file_path
-                let sess_info = self
+                // 设置为 agent 活动会话
+                self.active_sessions.insert(session_id.clone());
+                // 同步 session 信息
+                self.session.id = session_id.clone();
+                self.session.file_path = Some(file_path.clone());
+                // 从工作区树获取会话名称
+                let name = self
                     .tui
                     .workspaces
                     .iter()
-                    .find_map(|ws| ws.sessions.iter().find(|s| s.id == session_id));
-                if let Some(sess) = sess_info {
-                    let file_path = sess.file_path.clone();
-                    let name = sess.name.clone();
-                    // 设置为 agent 活动会话
-                    self.agent_session_id = Some(session_id.clone());
-                    self.agent_session_file = file_path.clone();
-                    // 同步 session 信息
-                    self.session.id = session_id.clone();
-                    self.session.file_path = file_path;
-                    self.session.name = Some(name.clone());
-                    // 同时切换到浏览该会话
-                    self.active_agent = Some(session_id.clone());
-                    if let Some(ref path) = self.session.file_path {
-                        if let Ok(msgs) = load_session_messages(path) {
-                            self.messages.insert(session_id.clone(), msgs);
-                        }
-                    }
-                    self.sync_messages_to_main_view(&session_id);
-                    self.sync_components();
-                    self.tui.bottom_bar.status = format!("已连接到会话: {}", name);
-                    // 保存 UI 状态
-                    crate::persistence::save(&self.build_persist_state());
-                } else {
-                    self.tui.bottom_bar.status = format!("找不到会话: {}", session_id);
+                    .find_map(|ws| ws.sessions.iter().find(|s| s.id == session_id))
+                    .map(|s| s.name.clone())
+                    .unwrap_or_default();
+                self.session.name = Some(name.clone());
+                // 同时切换到浏览该会话
+                self.active_agent = Some(session_id.clone());
+                if let Ok(msgs) = load_session_messages(&file_path) {
+                    self.messages.insert(session_id.clone(), msgs);
                 }
+                self.sync_messages_to_main_view(&session_id);
+                self.sync_components();
+                self.tui.bottom_bar.status = format!("已连接到会话: {}", name);
+                // 保存 UI 状态
+                crate::persistence::save(&self.build_persist_state());
             }
 
             Action::SidebarMove(delta) => {
@@ -2012,32 +2008,42 @@ impl App {
             .clone_from(&self.tui.subagents);
 
         // 同步 sidebar 数据
-        // ACTIVE SESSION 区域显示 pi agent 进程所在的会话（活动会话）
-        let agent_sess = self.agent_session_id.as_ref().and_then(|sid| {
-            self.tui
-                .workspaces
+        // ACTIVE SESSION 区域显示所有活跃会话的名称
+        let has_real_name = !self.active_sessions.is_empty();
+        let session_name = if has_real_name {
+            let names: Vec<String> = self
+                .active_sessions
                 .iter()
-                .find_map(|ws| ws.sessions.iter().find(|s| s.id == *sid))
-        });
-        let session_name = agent_sess
-            .map(|s| s.name.clone())
-            .or_else(|| self.session.name.clone())
-            .unwrap_or_else(|| "No agent".to_string());
-        let has_real_name = agent_sess.is_some() || self.session.name.is_some();
+                .filter_map(|sid| {
+                    self.tui
+                        .workspaces
+                        .iter()
+                        .find_map(|ws| ws.sessions.iter().find(|s| s.id == *sid))
+                        .map(|s| s.name.clone())
+                })
+                .collect();
+            if names.is_empty() {
+                "No agent".to_string()
+            } else {
+                format!(
+                    "{} 个活跃 ({}..)",
+                    names.len(),
+                    names.first().map(|n| n.as_str()).unwrap_or("")
+                )
+            }
+        } else {
+            "No agent".to_string()
+        };
         self.tui.sidebar.active_session = session_name;
         if has_real_name {
             self.tui.sidebar.session_id.clone_from(&self.session.id);
         } else {
             self.tui.sidebar.session_id.clear();
         }
-        // 同步 provider 数据到 sidebar
-        // 同步工作区会话的 is_online 标记（基于 agent_session_file 精确匹配）
+        // 同步工作区会话的 is_online 标记
         for ws in &mut self.tui.workspaces {
             for s in &mut ws.sessions {
-                s.is_online = self
-                    .agent_session_file
-                    .as_ref()
-                    .is_some_and(|af| s.file_path.as_ref().is_some_and(|fp| fp == af));
+                s.is_online = self.active_sessions.contains(&s.id);
             }
         }
         self.tui.sidebar.providers.clone_from(&self.tui.providers);

@@ -560,12 +560,10 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                         }
                         let sid = data.get("sessionId").and_then(|v| v.as_str()).map(String::from);
                         let sname = data.get("sessionName").and_then(|v| v.as_str()).map(String::from);
-                        let sfile = data.get("sessionFile").and_then(|v| v.as_str()).map(String::from);
-                        // 更新 agent 会话标记（用 sessionFile 路径匹配，比 sessionId 更可靠）
-                        app.agent_session_file = sfile.clone();
+                        let sf = data.get("sessionFile").and_then(|v| v.as_str()).map(String::from);
                         // 同步 session 信息（供 sync_components ACTIVE SESSION 显示）
                         app.session.id = sid.unwrap_or_default();
-                        app.session.file_path = sfile;
+                        app.session.file_path = sf;
                         app.session.name = sname;
                     }
                 });
@@ -1237,13 +1235,19 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                                                         });
                                                     if is_double {
                                                         app.tui.last_enter_session = None;
-                                                        app.handle_action(
-                                                            Action::ConnectSession(
-                                                                session.id.clone(),
-                                                            ),
-                                                        )
-                                                        .await
-                                                        .ok();
+                                                        if let Some(file_path) =
+                                                            session.file_path.clone()
+                                                        {
+                                                            app.handle_action(
+                                                                Action::ConnectSession {
+                                                                    session_id:
+                                                                        session.id.clone(),
+                                                                    file_path,
+                                                                },
+                                                            )
+                                                            .await
+                                                            .ok();
+                                                        }
                                                     } else {
                                                         app.tui.last_enter_session =
                                                             Some((session.id.clone(), now));

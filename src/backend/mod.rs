@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 
+pub mod agent_manager;
 pub mod event;
 pub mod rpc;
 pub mod rpc_client;
