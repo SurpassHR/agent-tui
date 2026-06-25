@@ -1259,7 +1259,7 @@ impl App {
             }
 
             Action::ContentUpdate { agent_id, content } => {
-                tracing::info!(
+                tracing::debug!(
                     "HANDLE ContentUpdate agent={} blocks={}",
                     agent_id,
                     content.len()

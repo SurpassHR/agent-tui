@@ -34,7 +34,7 @@ fn translate_pi_events(event: PiEvent, agent_id: &str) -> Vec<Action> {
         PiEvent::AutoRetryEnd { .. } => "AutoRetryEnd",
         PiEvent::ExtensionUiRequest { .. } => "ExtensionUiRequest",
     };
-    tracing::info!(
+    tracing::debug!(
         "PI_EVENT type={} (has_message={})",
         event_type,
         matches!(
@@ -57,7 +57,7 @@ fn translate_pi_events(event: PiEvent, agent_id: &str) -> Vec<Action> {
             // 临时诊断日志：确认 pi 是否携带 message.content 快照
             let has_msg = message.is_some();
             let block_count = message.as_ref().map(|m| m.content.len()).unwrap_or(0);
-            tracing::info!(
+            tracing::debug!(
                 "MSG_UPDATE type={:?} has_message={} blocks={}",
                 assistant_event.event_type,
                 has_msg,
