@@ -4830,4 +4830,47 @@ mod tests {
         );
         assert!(msgs[0].text.contains("✓"), "Done should show ✓");
     }
+
+    #[test]
+    fn test_is_online_from_active_sessions() {
+        let mut app = App::new_rpc(tokio::sync::mpsc::channel::<Action>(1).0);
+        app.tui.workspaces.push(WorkspaceNode {
+            cwd: "/test".into(),
+            display_name: "test".into(),
+            sessions: vec![SessionNode {
+                id: "sess-1".into(),
+                name: "Test".into(),
+                file_path: None,
+                message_count: 0,
+                is_online: false,
+            }],
+            expanded: true,
+        });
+
+        // 未连接时 is_online 为 false
+        app.sync_components();
+        assert!(!app.tui.workspaces[0].sessions[0].is_online);
+
+        // 连接后 is_online 为 true
+        app.active_sessions.insert("sess-1".into());
+        app.sync_components();
+        assert!(app.tui.workspaces[0].sessions[0].is_online);
+
+        // 断开后 is_online 恢复为 false
+        app.active_sessions.remove("sess-1");
+        app.sync_components();
+        assert!(!app.tui.workspaces[0].sessions[0].is_online);
+    }
+
+    #[test]
+    fn test_persist_includes_active_agent_sessions() {
+        let mut app = App::new_rpc(tokio::sync::mpsc::channel::<Action>(1).0);
+        app.active_sessions.insert("sess-a".into());
+        app.active_sessions.insert("sess-b".into());
+
+        let state = app.build_persist_state();
+        assert_eq!(state.active_agent_sessions.len(), 2);
+        assert!(state.active_agent_sessions.contains(&"sess-a".to_string()));
+        assert!(state.active_agent_sessions.contains(&"sess-b".to_string()));
+    }
 }
