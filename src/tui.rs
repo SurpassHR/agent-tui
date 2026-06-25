@@ -682,6 +682,222 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                                 }
                             }
                         }
+                        // ── 鼠标滚轮事件（内容滚动） ──
+                        MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
+                            let delta: isize = match mouse.kind {
+                                MouseEventKind::ScrollDown => 1,
+                                MouseEventKind::ScrollUp => -1,
+                                _ => 0,
+                            };
+                            let bounds = (
+                                39u16,
+                                term_size.width.saturating_sub(40),
+                            );
+
+                            if mouse.column <= bounds.0 {
+                                // Sidebar 区域
+                                let secs = app.tui.sidebar.layout_sections;
+                                let mouse_y = mouse.row;
+
+                                // 工作区树
+                                if mouse_y >= secs[1].y
+                                    && mouse_y < secs[1].y.saturating_add(secs[1].height)
+                                {
+                                    if delta > 0 {
+                                        app.tui.sidebar_cursor = app
+                                            .tui
+                                            .sidebar_cursor
+                                            .saturating_add(delta as usize);
+                                    } else {
+                                        app.tui.sidebar_cursor = app
+                                            .tui
+                                            .sidebar_cursor
+                                            .saturating_sub((-delta) as usize);
+                                    }
+                                }
+                                // PROVIDER+MODEL 区（footer）
+                                else if mouse_y >= secs[3].y
+                                    && mouse_y < secs[3].y.saturating_add(secs[3].height)
+                                {
+                                    let offset = mouse_y.saturating_sub(secs[3].y) as usize;
+                                    // provider 区行数：1(分隔线) + 1(标题) + providers + 1(add provider)
+                                    let provider_total = 1 + 1 + app.tui.providers.len()
+                                        + if app.tui.providers.is_empty() { 0 } else { 1 };
+
+                                    if offset < provider_total {
+                                        // PROVIDER 区
+                                        if delta > 0 {
+                                            let new = app
+                                                .tui
+                                                .provider_cursor
+                                                .saturating_add(delta as usize);
+                                            app.tui.provider_cursor =
+                                                new.min(app.tui.providers.len());
+                                        } else {
+                                            app.tui.provider_cursor = app
+                                                .tui
+                                                .provider_cursor
+                                                .saturating_sub((-delta) as usize);
+                                        }
+                                    } else {
+                                        // MODEL 区
+                                        let ap = app
+                                            .tui
+                                            .providers
+                                            .get(app.tui.active_provider_idx.unwrap_or(0));
+                                        let model_count =
+                                            ap.map(|p| p.models.len()).unwrap_or(0);
+                                        if delta > 0 {
+                                            let new = app
+                                                .tui
+                                                .model_cursor
+                                                .saturating_add(delta as usize);
+                                            app.tui.model_cursor =
+                                                new.min(model_count.saturating_sub(1));
+                                        } else {
+                                            app.tui.model_cursor = app
+                                                .tui
+                                                .model_cursor
+                                                .saturating_sub((-delta) as usize);
+                                        }
+                                    }
+                                }
+                                // 活跃会话区 — 无滚动内容，忽略
+                            } else if mouse.column >= bounds.1 {
+                                // Agent Panel — 暂忽略（当前无溢出内容）
+                            } else {
+                                // MainView 区域 — 先读取需要的不可变数据
+                                let messages_rect = app.tui.main_view.messages_rect;
+
+                                if app.tui.main_view.entered_view.is_some() {
+                                    // EnteredView 模式 — 调整内部 scroll
+                                    match &mut app.tui.main_view.entered_view {
+                                        Some(crate::message::EnteredView::FullOutput {
+                                            ref mut scroll,
+                                            ..
+                                        }) => {
+                                            if delta > 0 {
+                                                *scroll =
+                                                    scroll.saturating_add(delta as usize);
+                                            } else {
+                                                *scroll = scroll
+                                                    .saturating_sub((-delta) as usize);
+                                            }
+                                        }
+                                        Some(crate::message::EnteredView::Diff {
+                                            ref mut scroll,
+                                            ..
+                                        }) => {
+                                            if delta > 0 {
+                                                *scroll =
+                                                    scroll.saturating_add(delta as usize);
+                                            } else {
+                                                *scroll = scroll
+                                                    .saturating_sub((-delta) as usize);
+                                            }
+                                        }
+                                        Some(crate::message::EnteredView::Subagent {
+                                            ref mut scroll,
+                                            ..
+                                        }) => {
+                                            if delta > 0 {
+                                                *scroll =
+                                                    scroll.saturating_add(delta as usize);
+                                            } else {
+                                                *scroll = scroll
+                                                    .saturating_sub((-delta) as usize);
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                } else if mouse.row >= messages_rect.y
+                                    && mouse.row
+                                        < messages_rect
+                                            .y
+                                            .saturating_add(messages_rect.height)
+                                {
+                                    tracing::debug!(
+                                        "滚轮: delta={}, line_scroll={}, mode={:?}, total_lines={}",
+                                        delta,
+                                        app.tui.main_view.line_scroll,
+                                        app.tui.main_view.scroll_mode,
+                                        app.tui.main_view.msg_line_ranges.last().map(|(_,e)| *e).unwrap_or(0),
+                                    );
+                                    // 普通消息列表 — 行级滚动（每刻度 ~视口 1/8）
+                                    let scroll_lines: usize =
+                                        (messages_rect.height as usize / 8).max(3);
+                                    let mv = &mut app.tui.main_view;
+                                    let ranges = &mv.msg_line_ranges;
+                                    let total_lines = ranges
+                                        .last()
+                                        .map(|(_, end)| *end)
+                                        .unwrap_or(0);
+                                    let visible_h = messages_rect.height as usize;
+                                    let max_scroll =
+                                        total_lines.saturating_sub(visible_h);
+
+                                    if mv.scroll_mode
+                                        == crate::app::ScrollMode::TailFollow
+                                        && delta > 0
+                                    {
+                                        // 已在末尾，无需滚动
+                                        continue;
+                                    }
+
+                                    if mv.scroll_mode
+                                        == crate::app::ScrollMode::TailFollow
+                                    {
+                                        // 从 TailFollow 切到 Pinned，从底部开始
+                                        mv.scroll_mode =
+                                            crate::app::ScrollMode::Pinned;
+                                        mv.line_scroll = max_scroll;
+                                    }
+
+                                    // 行级滚动
+                                    if delta > 0 {
+                                        mv.line_scroll = mv
+                                            .line_scroll
+                                            .saturating_add(scroll_lines)
+                                            .min(max_scroll);
+                                    } else {
+                                        mv.line_scroll = mv
+                                            .line_scroll
+                                            .saturating_sub(scroll_lines);
+                                    }
+
+                                    // 根据 line_scroll 反推 message_cursor
+                                    for (i, &(start, end)) in
+                                        ranges.iter().enumerate()
+                                    {
+                                        if mv.line_scroll >= start
+                                            && mv.line_scroll < end
+                                        {
+                                            app.tui.message_cursor = i;
+                                            break;
+                                        }
+                                        // 如果 line_scroll 在 gap 中（消息间空行），
+                                        // 取前一条消息
+                                        if mv.line_scroll < start {
+                                            app.tui.message_cursor =
+                                                i.saturating_sub(1);
+                                            break;
+                                        }
+                                        if i == ranges.len() - 1 {
+                                            app.tui.message_cursor = i;
+                                        }
+                                    }
+
+                                    // 滚到底部时切回 TailFollow
+                                    if mv.line_scroll >= max_scroll {
+                                        mv.scroll_mode =
+                                            crate::app::ScrollMode::TailFollow;
+                                    }
+                                    // 同步 scroll_mode 到 TuiState（防止 sync_components 覆写）
+                                    app.tui.scroll_mode = mv.scroll_mode;
+                                }
+                                // 输入区 — 忽略滚轮
+                            }
+                        }
                         _ => {}
                     }
                     continue;
@@ -829,6 +1045,7 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                                         app.tui.message_cursor = bref.msg_index;
                                         app.tui.scroll_mode =
                                             crate::app::ScrollMode::Pinned;
+                                        sync_line_scroll(&mut app.tui);
                                     }
                                 } else {
                                     // 已在第一个块或列表为空 → 切换到 Input 子区
@@ -862,6 +1079,7 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                                         app.tui.message_cursor = bref.msg_index;
                                         app.tui.scroll_mode =
                                             crate::app::ScrollMode::Pinned;
+                                        sync_line_scroll(&mut app.tui);
                                     }
                                 } else {
                                     // 无更多块或列表为空 → 切换到 Input 子区
@@ -1165,6 +1383,7 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                                     if cur > 0 {
                                         app.tui.message_cursor = cur - 1;
                                         app.tui.scroll_mode = crate::app::ScrollMode::Pinned;
+                                        sync_line_scroll(&mut app.tui);
                                     }
                                 }
                                 crossterm::event::KeyCode::Down => {
@@ -1177,6 +1396,7 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                                         app.tui.scroll_mode =
                                             crate::app::ScrollMode::TailFollow;
                                     }
+                                    sync_line_scroll(&mut app.tui);
                                 }
                                 crossterm::event::KeyCode::Enter => {
                                     // 块选中时进入详情视图
@@ -1539,6 +1759,16 @@ mod clipboard_tests {
         assert!(output.status.success());
         let result = String::from_utf8_lossy(&output.stdout);
         assert_eq!(result.trim(), test_data, "剪贴板内容不匹配");
+    }
+}
+
+/// 根据当前 message_cursor 同步 line_scroll 偏移
+fn sync_line_scroll(tui: &mut crate::app::TuiState) {
+    let ranges = &tui.main_view.msg_line_ranges;
+    if tui.message_cursor < ranges.len() {
+        let (start_line, _) = ranges[tui.message_cursor];
+        let msg_area_h = tui.main_view.messages_rect.height as usize;
+        tui.main_view.line_scroll = start_line.saturating_sub(msg_area_h / 3);
     }
 }
 

@@ -18,8 +18,6 @@ use crate::theme::Theme;
 pub struct MainView {
     /// 消息列表
     pub messages: Vec<ChatMessage>,
-    /// 滚动偏移
-    pub scroll_offset: usize,
     /// 输入缓冲区
     pub input_buffer: String,
     /// 是否显示思考过程
@@ -42,13 +40,20 @@ pub struct MainView {
     pub entered_view: Option<crate::message::EnteredView>,
     /// 输入补全 popup
     pub completion_popup: Option<crate::message::CompletionPopup>,
+    /// 最近一次渲染的消息区域布局（供鼠标滚轮命中测试）
+    pub messages_rect: Rect,
+    /// 最近一次渲染的输入区域布局（滚轮忽略此区域）
+    pub input_rect: Rect,
+    /// 行级滚动偏移（Pinned 模式下使用，滚轮逐行滚动）
+    pub line_scroll: usize,
+    /// 最近一次渲染的消息行范围 [(start, end), ...]
+    pub msg_line_ranges: Vec<(usize, usize)>,
 }
 
 impl Default for MainView {
     fn default() -> Self {
         Self {
             messages: Vec::new(),
-            scroll_offset: 0,
             input_buffer: String::new(),
             show_thinking: false,
             has_focus: false,
@@ -60,6 +65,10 @@ impl Default for MainView {
             block_states: std::collections::HashMap::new(),
             entered_view: None,
             completion_popup: None,
+            messages_rect: Rect::new(0, 0, 0, 0),
+            input_rect: Rect::new(0, 0, 0, 0),
+            line_scroll: 0,
+            msg_line_ranges: Vec::new(),
         }
     }
 }
@@ -398,16 +407,15 @@ impl Component for MainView {
             msg_line_ranges.push((start, end));
         }
 
+        // 存储消息行范围（供滚轮事件中反推 message_cursor）
+        self.msg_line_ranges = msg_line_ranges.clone();
+
         // 滚动：根据滚动模式决定显示区域
         let mut visible_lines: Vec<Line<'static>> = if all_lines.is_empty() {
             Vec::new()
-        } else if self.scroll_mode == ScrollMode::Pinned
-            && !msg_line_ranges.is_empty()
-            && self.message_cursor < msg_line_ranges.len()
-        {
-            let (start_line, _end_line) = msg_line_ranges[self.message_cursor];
-            let start = start_line.saturating_sub(msg_area_height as usize / 3);
-            let start = start.min(all_lines.len().saturating_sub(msg_area_height as usize));
+        } else if self.scroll_mode == ScrollMode::Pinned {
+            // Pinned 模式使用行级 line_scroll 偏移
+            let start = self.line_scroll.min(all_lines.len().saturating_sub(msg_area_height as usize));
             all_lines[start..]
                 .iter()
                 .take(msg_area_height as usize)
@@ -443,6 +451,10 @@ impl Component for MainView {
         // 输入框
         let input_line = self.render_input_inner(theme);
         f.render_widget(Paragraph::new(input_line), input_area);
+
+        // 存储布局矩形供鼠标滚轮命中测试
+        self.messages_rect = msg_area;
+        self.input_rect = input_area;
     }
 }
 
@@ -461,8 +473,12 @@ impl MainView {
         f.render_widget(block, area);
 
         match view {
-            crate::message::EnteredView::Diff { path, diff_lines } => {
-                self.render_diff(f, area, theme, path, diff_lines);
+            crate::message::EnteredView::Diff {
+                path,
+                diff_lines,
+                scroll,
+            } => {
+                self.render_diff(f, area, theme, path, diff_lines, *scroll);
             }
             crate::message::EnteredView::FullOutput {
                 title,
@@ -471,7 +487,11 @@ impl MainView {
             } => {
                 self.render_full_output(f, area, theme, title, content, *scroll);
             }
-            crate::message::EnteredView::Subagent { agent_id, messages } => {
+            crate::message::EnteredView::Subagent {
+                agent_id,
+                messages,
+                scroll,
+            } => {
                 // Subagent 递归渲染（简化版：显示消息列表）
                 let title = format!("subagent: {}", agent_id);
                 let content = messages
@@ -489,7 +509,7 @@ impl MainView {
                     })
                     .collect::<Vec<_>>()
                     .join("\n");
-                self.render_full_output(f, area, theme, &title, &content, 0);
+                self.render_full_output(f, area, theme, &title, &content, *scroll);
             }
         }
     }
@@ -502,8 +522,10 @@ impl MainView {
         theme: &Theme,
         path: &str,
         diff_lines: &[crate::message::DiffLine],
+        scroll: usize,
     ) {
         let inner = inset_content(area);
+        let visible_height = inner.height.saturating_sub(1) as usize;
         let plus_count = diff_lines.iter().filter(|l| l.kind == '+').count();
         let minus_count = diff_lines.iter().filter(|l| l.kind == '-').count();
 
@@ -542,10 +564,16 @@ impl MainView {
         let footer = "└".to_string() + &"─".repeat(inner.width.saturating_sub(2).max(1) as usize);
         lines.push(Line::from(vec![footer.fg(theme.text_dim)]));
 
-        // 裁剪到可见区域
+        // Clamp scroll 偏移
+        let total_lines = lines.len();
+        let max_scroll = total_lines.saturating_sub(visible_height);
+        let scroll = scroll.min(max_scroll);
+
+        // 从 scroll 偏移开始取行
         let visible: Vec<Line> = lines
             .into_iter()
-            .take(inner.height.saturating_sub(1) as usize)
+            .skip(scroll)
+            .take(visible_height)
             .collect();
 
         let paragraph = Paragraph::new(visible)

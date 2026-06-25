@@ -23,7 +23,6 @@ use crate::theme::Theme;
 /// │ TOKENS  读:12.4K / 写:3.2K  │
 /// │ TOTAL  22.3K                │
 /// └─────────────────────────────┘
-#[derive(Default)]
 pub struct Sidebar {
     /// 当前活跃会话名称（人类可读）
     pub active_session: String,
@@ -54,6 +53,33 @@ pub struct Sidebar {
     pub port: u16,
     /// 当前选中的 Provider 索引（Space 切换控制）
     pub active_provider_idx: Option<usize>,
+    /// 最近一次渲染的子区布局 [活跃会话区, 工作区树, 分割线, PROVIDER+MODEL]
+    pub layout_sections: [Rect; 4],
+}
+
+impl Default for Sidebar {
+    fn default() -> Self {
+        Self {
+            active_session: String::new(),
+            session_id: String::new(),
+            message_count: 0,
+            workspaces: Vec::new(),
+            has_focus: false,
+            cursor: 0,
+            subsection: SidebarSubsection::Workspace,
+            selection: SelectionState::default(),
+            providers: Vec::new(),
+            router_running: false,
+            current_model: String::new(),
+            provider_cursor: 0,
+            model_cursor: 0,
+            model_search: String::new(),
+            model_scroll: 0,
+            port: 0,
+            active_provider_idx: None,
+            layout_sections: [Rect::new(0, 0, 0, 0); 4],
+        }
+    }
 }
 
 /// 底部 provider 区最小行数（动态扩展）
@@ -556,5 +582,13 @@ impl Component for Sidebar {
             .style(Style::default().bg(theme.bg))
             .alignment(Alignment::Left);
         f.render_widget(footer_para, sections[2]);
+
+        // 存储布局矩形供鼠标滚轮命中测试
+        self.layout_sections = [
+            sections[0],           // 活跃会话区
+            sections[1],           // 工作区树
+            Rect::new(0, 0, 0, 0), // 分割线（无滚动内容）
+            sections[2],           // PROVIDER+MODEL 区
+        ];
     }
 }

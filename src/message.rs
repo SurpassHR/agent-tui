@@ -235,6 +235,8 @@ pub enum EnteredView {
         path: String,
         /// diff 行
         diff_lines: Vec<DiffLine>,
+        /// 滚动偏移（行数）
+        scroll: usize,
     },
     /// 完整输出视图
     FullOutput {
@@ -251,6 +253,8 @@ pub enum EnteredView {
         agent_id: String,
         /// 子代理消息列表
         messages: Vec<ChatMessage>,
+        /// 滚动偏移（行数）
+        scroll: usize,
     },
 }
 

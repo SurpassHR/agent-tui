@@ -1339,6 +1339,7 @@ impl App {
                                                 Some(crate::message::EnteredView::Diff {
                                                     path: path.to_string(),
                                                     diff_lines,
+                                                    scroll: 0,
                                                 });
                                         }
                                         "read" | "bash" => {
