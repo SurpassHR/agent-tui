@@ -340,6 +340,7 @@ pub fn merge_models_text(
                 .map(|m| m.enabled)
                 .unwrap_or(false);
             Some(crate::provider::ModelInfo {
+                thinking_level_map: None,
                 id,
                 name: String::new(),
                 context_window: ctx,
@@ -614,6 +615,7 @@ impl TuiState {
                         api_key: String::new(),
                         endpoint_type: "openai_compat".into(),
                         models: vec![crate::provider::ModelInfo {
+                            thinking_level_map: None,
                             id: "gpt-4o".into(),
                             name: "GPT-4o".into(),
                             context_window: 128000,
@@ -984,6 +986,7 @@ impl TuiState {
                 } else if mgr.cursor == mc {
                     let idx = editor.draft.models.len();
                     editor.draft.models.push(crate::provider::ModelInfo {
+                        thinking_level_map: None,
                         id: "new-model".into(),
                         name: String::new(),
                         context_window: 128000,
@@ -1074,6 +1077,7 @@ impl TuiState {
                 }
                 if fe.model_index < editor.draft.models.len() {
                     editor.draft.models[fe.model_index] = crate::provider::ModelInfo {
+                        thinking_level_map: None,
                         id: fe.draft_id.trim().to_string(),
                         name: String::new(),
                         context_window: fe.draft_ctx.parse().unwrap_or(128000),
@@ -4056,6 +4060,7 @@ mod tests {
             base_url: "https://api.deepseek.com/v1".into(),
             api_key: "sk-test".into(),
             models: vec![crate::provider::ModelInfo {
+                thinking_level_map: None,
                 id: "deepseek-chat".into(),
                 name: "DeepSeek Chat".into(),
                 context_window: 64000,
@@ -4132,6 +4137,7 @@ mod tests {
             base_url: "https://api.deepseek.com/v1".into(),
             api_key: "sk-test".into(),
             models: vec![crate::provider::ModelInfo {
+                thinking_level_map: None,
                 id: "deepseek-chat".into(),
                 name: "DeepSeek Chat".into(),
                 context_window: 64000,
@@ -4249,6 +4255,7 @@ mod tests {
             api_key: "".into(),
             models: vec![
                 crate::provider::ModelInfo {
+                    thinking_level_map: None,
                     id: "m1".into(),
                     name: "M1".into(),
                     context_window: 1000,
@@ -4257,6 +4264,7 @@ mod tests {
                     enabled: true,
                 },
                 crate::provider::ModelInfo {
+                    thinking_level_map: None,
                     id: "m2".into(),
                     name: "M2".into(),
                     context_window: 2000,
@@ -4303,6 +4311,7 @@ mod tests {
             api_key: "".into(),
             models: vec![
                 crate::provider::ModelInfo {
+                    thinking_level_map: None,
                     id: "m1".into(),
                     name: "M1".into(),
                     context_window: 1000,
@@ -4311,6 +4320,7 @@ mod tests {
                     enabled: true,
                 },
                 crate::provider::ModelInfo {
+                    thinking_level_map: None,
                     id: "m2".into(),
                     name: "M2".into(),
                     context_window: 2000,
@@ -4344,6 +4354,7 @@ mod tests {
             base_url: "".into(),
             api_key: "".into(),
             models: vec![crate::provider::ModelInfo {
+                thinking_level_map: None,
                 id: "m1".into(),
                 name: "M1".into(),
                 context_window: 1000,
@@ -4378,6 +4389,7 @@ mod tests {
                 base_url: "".into(),
                 api_key: "".into(),
                 models: vec![crate::provider::ModelInfo {
+                    thinking_level_map: None,
                     id: "shared-model".into(),
                     name: "Shared".into(),
                     context_window: 1000,
@@ -4394,6 +4406,7 @@ mod tests {
                 base_url: "".into(),
                 api_key: "".into(),
                 models: vec![crate::provider::ModelInfo {
+                    thinking_level_map: None,
                     id: "shared-model".into(),
                     name: "Shared".into(),
                     context_window: 2000,
@@ -4437,6 +4450,7 @@ mod tests {
                 base_url: "".into(),
                 api_key: "".into(),
                 models: vec![crate::provider::ModelInfo {
+                    thinking_level_map: None,
                     id: "dup".into(),
                     name: "Dup".into(),
                     context_window: 1000,
@@ -4453,6 +4467,7 @@ mod tests {
                 base_url: "".into(),
                 api_key: "".into(),
                 models: vec![crate::provider::ModelInfo {
+                    thinking_level_map: None,
                     id: "dup".into(),
                     name: "Dup".into(),
                     context_window: 2000,
@@ -4488,6 +4503,7 @@ mod tests {
             base_url: "".into(),
             api_key: "".into(),
             models: vec![crate::provider::ModelInfo {
+                thinking_level_map: None,
                 id: "m1".into(),
                 name: "M1".into(),
                 context_window: 1000,
@@ -4516,6 +4532,7 @@ mod tests {
             base_url: "".into(),
             api_key: "".into(),
             models: vec![crate::provider::ModelInfo {
+                thinking_level_map: None,
                 id: "m1".into(),
                 name: "M1".into(),
                 context_window: 1000,
@@ -4548,6 +4565,7 @@ mod tests {
                 base_url: "".into(),
                 api_key: "".into(),
                 models: vec![crate::provider::ModelInfo {
+                    thinking_level_map: None,
                     id: "ma".into(),
                     name: "MA".into(),
                     context_window: 1000,
@@ -4564,6 +4582,7 @@ mod tests {
                 base_url: "".into(),
                 api_key: "".into(),
                 models: vec![crate::provider::ModelInfo {
+                    thinking_level_map: None,
                     id: "mb".into(),
                     name: "MB".into(),
                     context_window: 2000,
@@ -4608,6 +4627,7 @@ mod tests {
             base_url: "".into(),
             api_key: "".into(),
             models: vec![crate::provider::ModelInfo {
+                thinking_level_map: None,
                 id: "m1".into(),
                 name: "M1".into(),
                 context_window: 1000,
@@ -4649,6 +4669,7 @@ mod tests {
                 base_url: "".into(),
                 api_key: "".into(),
                 models: vec![crate::provider::ModelInfo {
+                    thinking_level_map: None,
                     id: "ma".into(),
                     name: "MA".into(),
                     context_window: 1000,
@@ -4665,6 +4686,7 @@ mod tests {
                 base_url: "".into(),
                 api_key: "".into(),
                 models: vec![crate::provider::ModelInfo {
+                    thinking_level_map: None,
                     id: "mb".into(),
                     name: "MB".into(),
                     context_window: 2000,
@@ -4705,6 +4727,7 @@ mod tests {
                 base_url: "".into(),
                 api_key: "".into(),
                 models: vec![crate::provider::ModelInfo {
+                    thinking_level_map: None,
                     id: "shared".into(),
                     name: "Shared".into(),
                     context_window: 1000,
@@ -4721,6 +4744,7 @@ mod tests {
                 base_url: "".into(),
                 api_key: "".into(),
                 models: vec![crate::provider::ModelInfo {
+                    thinking_level_map: None,
                     id: "shared".into(),
                     name: "Shared".into(),
                     context_window: 2000,
@@ -4750,6 +4774,7 @@ mod tests {
                 base_url: "".into(),
                 api_key: "".into(),
                 models: vec![crate::provider::ModelInfo {
+                    thinking_level_map: None,
                     id: "model-a".into(),
                     name: "MA".into(),
                     context_window: 1000,
@@ -4766,6 +4791,7 @@ mod tests {
                 base_url: "".into(),
                 api_key: "".into(),
                 models: vec![crate::provider::ModelInfo {
+                    thinking_level_map: None,
                     id: "model-b".into(),
                     name: "MB".into(),
                     context_window: 2000,
@@ -4794,6 +4820,7 @@ mod tests {
                 base_url: "".into(),
                 api_key: "".into(),
                 models: vec![crate::provider::ModelInfo {
+                    thinking_level_map: None,
                     id: "shared".into(),
                     name: "Shared".into(),
                     context_window: 1000,
@@ -4810,6 +4837,7 @@ mod tests {
                 base_url: "".into(),
                 api_key: "".into(),
                 models: vec![crate::provider::ModelInfo {
+                    thinking_level_map: None,
                     id: "shared".into(),
                     name: "Shared".into(),
                     context_window: 2000,
@@ -4838,6 +4866,7 @@ mod tests {
             api_key: "".into(),
             models: vec![
                 crate::provider::ModelInfo {
+                    thinking_level_map: None,
                     id: "m1".into(),
                     name: "M1".into(),
                     context_window: 1000,
@@ -4846,6 +4875,7 @@ mod tests {
                     enabled: true,
                 },
                 crate::provider::ModelInfo {
+                    thinking_level_map: None,
                     id: "m2".into(),
                     name: "M2".into(),
                     context_window: 2000,
@@ -4875,6 +4905,7 @@ mod tests {
                 base_url: "".into(),
                 api_key: "".into(),
                 models: vec![crate::provider::ModelInfo {
+                    thinking_level_map: None,
                     id: "m1".into(),
                     name: "M1".into(),
                     context_window: 1000,
@@ -4891,6 +4922,7 @@ mod tests {
                 base_url: "".into(),
                 api_key: "".into(),
                 models: vec![crate::provider::ModelInfo {
+                    thinking_level_map: None,
                     id: "m2".into(),
                     name: "M2".into(),
                     context_window: 2000,

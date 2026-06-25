@@ -69,6 +69,10 @@ pub struct ModelInfo {
     #[serde(default = "default_tier")]
     pub tier: String,
     pub enabled: bool,
+    /// 思考级别映射：将 pi 标准级别映射到提供商原生值
+    /// `null` 表示该级别不支持，应在 UI 中隐藏
+    #[serde(default)]
+    pub thinking_level_map: Option<std::collections::HashMap<String, Option<String>>>,
 }
 
 fn default_tier() -> String {
