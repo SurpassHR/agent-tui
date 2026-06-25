@@ -558,9 +558,15 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                             app.runtime.model_name = model.get("name").and_then(|v| v.as_str()).map(String::from);
                             app.runtime.provider = model.get("provider").and_then(|v| v.as_str()).map(String::from);
                         }
-                        app.session.id = data.get("sessionId").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        app.session.file_path = data.get("sessionFile").and_then(|v| v.as_str()).map(String::from);
-                        app.session.name = data.get("sessionName").and_then(|v| v.as_str()).map(String::from);
+                        let sid = data.get("sessionId").and_then(|v| v.as_str()).map(String::from);
+                        let sname = data.get("sessionName").and_then(|v| v.as_str()).map(String::from);
+                        let sfile = data.get("sessionFile").and_then(|v| v.as_str()).map(String::from);
+                        // 更新 agent 会话标记（用 sessionFile 路径匹配，比 sessionId 更可靠）
+                        app.agent_session_file = sfile.clone();
+                        // 同步 session 信息（供 sync_components ACTIVE SESSION 显示）
+                        app.session.id = sid.unwrap_or_default();
+                        app.session.file_path = sfile;
+                        app.session.name = sname;
                     }
                 });
                 let _ = client.request(
@@ -1215,11 +1221,49 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                                                 .get(ws_idx)
                                                 .and_then(|ws| ws.sessions.get(si))
                                             {
-                                                app.handle_action(
-                                                    Action::SelectSession(session.id.clone()),
-                                                )
-                                                .await
-                                                .ok();
+                                                // Space → 浏览会话
+                                                // Enter → 浏览；双击 Enter → 连接会话
+                                                if key.code == crossterm::event::KeyCode::Enter {
+                                                    let now = std::time::Instant::now();
+                                                    let is_double = app
+                                                        .tui
+                                                        .last_enter_session
+                                                        .as_ref()
+                                                        .is_some_and(|(id, t)| {
+                                                            id == &session.id
+                                                                && now
+                                                                    .duration_since(*t)
+                                                                    < std::time::Duration::from_millis(500)
+                                                        });
+                                                    if is_double {
+                                                        app.tui.last_enter_session = None;
+                                                        app.handle_action(
+                                                            Action::ConnectSession(
+                                                                session.id.clone(),
+                                                            ),
+                                                        )
+                                                        .await
+                                                        .ok();
+                                                    } else {
+                                                        app.tui.last_enter_session =
+                                                            Some((session.id.clone(), now));
+                                                        app.handle_action(
+                                                            Action::SelectSession(
+                                                                session.id.clone(),
+                                                            ),
+                                                        )
+                                                        .await
+                                                        .ok();
+                                                    }
+                                                } else {
+                                                    app.handle_action(
+                                                        Action::SelectSession(
+                                                            session.id.clone(),
+                                                        ),
+                                                    )
+                                                    .await
+                                                    .ok();
+                                                }
                                             }
                                         }
                                     }

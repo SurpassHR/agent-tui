@@ -93,8 +93,10 @@ pub enum Action {
     // --- 侧边栏交互（Workspace 树） ---
     /// 切换指定索引的工作区展开/折叠
     ToggleWorkspace(usize),
-    /// 选择指定 ID 的会话
+    /// 选择指定 ID 的会话（浏览模式，仅加载消息）
     SelectSession(String),
+    /// 连接到指定 ID 的会话（启动/切换 pi agent 进程）
+    ConnectSession(String),
     /// 侧边栏焦点移动（正=下，负=上）
     SidebarMove(i32),
     /// 面板焦点循环（1=向右，-1=向左）
