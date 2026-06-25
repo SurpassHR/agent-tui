@@ -2035,7 +2035,7 @@ impl App {
     }
 
     /// 渲染前同步所有组件数据
-    fn sync_components(&mut self) {
+    pub(crate) fn sync_components(&mut self) {
         if let Some(agent_id) = &self.active_agent {
             if let Some(msgs) = self.messages.get(agent_id) {
                 self.tui.main_view.messages = msgs.clone();
@@ -2855,6 +2855,7 @@ impl App {
     pub fn build_persist_state(&self) -> crate::persistence::UiPersistState {
         crate::persistence::UiPersistState {
             active_session_id: self.active_agent.clone(),
+            active_agent_sessions: self.active_sessions.iter().cloned().collect(),
             expanded_workspaces: self
                 .tui
                 .workspaces

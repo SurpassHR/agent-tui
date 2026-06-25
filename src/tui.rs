@@ -479,6 +479,27 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
         )>();
     app.event_tx = Some(agent_event_tx.clone());
 
+    // 从持久化状态恢复活跃 agent 会话
+    let persist_state = crate::persistence::load();
+    if !persist_state.active_agent_sessions.is_empty() {
+        let cwd = std::env::current_dir().unwrap_or_default();
+        for session_id in &persist_state.active_agent_sessions {
+            if let Some(file_path) = app.tui.workspaces.iter().find_map(|ws| {
+                ws.sessions.iter().find(|s| s.id == *session_id)
+            }).and_then(|s| s.file_path.clone()) {
+                tracing::info!("恢复活跃 agent 会话: {}", session_id);
+                let _ = app.agent_manager.spawn(
+                    session_id.clone(),
+                    std::path::PathBuf::from(&file_path),
+                    cwd.clone(),
+                    agent_event_tx.clone(),
+                ).await;
+                app.active_sessions.insert(session_id.clone());
+            }
+        }
+        app.sync_components();
+    }
+
     // 将当前 pi 进程的 event_rx 转发到统一 channel
     let (dummy_tx, dummy_rx) = tokio::sync::mpsc::unbounded_channel();
     let original_rx = std::mem::replace(&mut client.event_rx, dummy_rx);
@@ -1741,6 +1762,8 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
     crate::persistence::save(&app.build_persist_state());
 
     tracing::debug!("TUI 主循环结束");
+    // 杀掉所有 agent 子进程
+    app.agent_manager.kill_all().await;
     backend.stop().await.ok();
     let _ = crossterm::execute!(std::io::stdout(), DisableMouseCapture);
     let _ = ratatui::try_restore();

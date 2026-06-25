@@ -11,6 +11,9 @@ use std::path::PathBuf;
 pub struct UiPersistState {
     /// 上次活跃的会话 ID（文件名去 .jsonl 后缀）
     pub active_session_id: Option<String>,
+    /// 活跃 agent 会话 ID 列表（启动后自动重新 spawn）
+    #[serde(default)]
+    pub active_agent_sessions: Vec<String>,
     /// 已展开的工作区名称列表（WorkspaceNode.name，显示名）
     pub expanded_workspaces: Vec<String>,
 }
@@ -85,6 +88,7 @@ mod tests {
     fn test_serialize_roundtrip() {
         let state = UiPersistState {
             active_session_id: Some("2026-06-24T13-52-35-984Z_019ef9e7".into()),
+            active_agent_sessions: vec!["sess-a".into(), "sess-b".into()],
             expanded_workspaces: vec![
                 "--home-hr-Projects-agent-tui--".into(),
                 "--media-hr-Data-Codes-ideogram4-editor--".into(),
@@ -93,6 +97,7 @@ mod tests {
         let json = serde_json::to_string(&state).expect("序列化失败");
         let restored: UiPersistState = serde_json::from_str(&json).expect("反序列化失败");
         assert_eq!(restored.active_session_id, state.active_session_id);
+        assert_eq!(restored.active_agent_sessions, state.active_agent_sessions);
         assert_eq!(restored.expanded_workspaces, state.expanded_workspaces);
     }
 
@@ -100,6 +105,16 @@ mod tests {
     fn test_default_is_empty() {
         let state = UiPersistState::default();
         assert!(state.active_session_id.is_none());
+        assert!(state.active_agent_sessions.is_empty());
         assert!(state.expanded_workspaces.is_empty());
+    }
+
+    #[test]
+    fn test_backward_compat_no_agent_sessions() {
+        // 旧版 state.json 没有 active_agent_sessions 字段
+        let old = r#"{"active_session_id":"sess-1","expanded_workspaces":[]}"#;
+        let restored: UiPersistState = serde_json::from_str(old).expect("应兼容旧格式");
+        assert_eq!(restored.active_session_id.unwrap(), "sess-1");
+        assert!(restored.active_agent_sessions.is_empty());
     }
 }
