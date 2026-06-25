@@ -630,6 +630,11 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                             app.runtime.model_name = model.get("name").and_then(|v| v.as_str()).map(String::from);
                             app.runtime.provider = model.get("provider").and_then(|v| v.as_str()).map(String::from);
                         }
+                        // 读取思考级别
+                        app.runtime.thinking_level = data
+                            .get("thinkingLevel")
+                            .and_then(|v| v.as_str())
+                            .map(String::from);
                         let sid = data.get("sessionId").and_then(|v| v.as_str()).map(String::from);
                         let sname = data.get("sessionName").and_then(|v| v.as_str()).map(String::from);
                         let sf = data.get("sessionFile").and_then(|v| v.as_str()).map(String::from);
