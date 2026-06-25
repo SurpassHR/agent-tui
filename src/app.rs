@@ -643,6 +643,8 @@ impl TuiState {
             providers: self.providers.clone(),
         };
         crate::provider::ProviderConfig::save(&path, &cfg);
+        // 重新生成 local-provider.ts，确保 pi 下次启动时使用正确的端点类型
+        crate::provider::regenerate_local_provider_ts(&cfg);
         // 同步到 router 共享的内存配置（若不可用则仅写磁盘）
         if let Some(ref shared) = self.shared_config {
             match shared.try_write() {

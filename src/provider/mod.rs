@@ -267,6 +267,36 @@ export default async function (pi: ExtensionAPI) {
     s
 }
 
+/// 重新生成 local-provider.ts 写入 pi 扩展目录
+///
+/// 每次 provider 配置变更时调用，确保下次 pi 启动使用正确的端点类型。
+pub fn regenerate_local_provider_ts(config: &ProviderConfig) {
+    let ts_content = generate_local_provider_ts(config, config.port);
+    let pi_home = std::env::var("PI_CODING_AGENT_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            std::env::var("HOME")
+                .map(|h| std::path::PathBuf::from(h).join(".pi").join("agent"))
+                .unwrap_or_default()
+        });
+    let ext_dir = pi_home.join("extensions");
+    let _ = std::fs::create_dir_all(&ext_dir);
+    if let Err(e) = std::fs::write(ext_dir.join("local-provider.ts"), &ts_content) {
+        tracing::warn!("重新生成 local-provider.ts 失败: {}", e);
+    } else {
+        let model_count: usize = config
+            .providers
+            .iter()
+            .map(|p| p.models.len())
+            .sum();
+        tracing::info!(
+            "local-provider.ts 已更新（{} providers, {} models）",
+            config.providers.len(),
+            model_count
+        );
+    }
+}
+
 /// 从 /v1/models 接口拉取模型列表，返回 id:tier:contextWindow 格式文本
 pub async fn fetch_models_list(base_url: &str, api_key: &str) -> Option<String> {
     let url = format!("{}/v1/models", base_url.trim_end_matches('/'));

@@ -347,28 +347,7 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
         let shared = crate::provider::SharedConfig::new(tokio::sync::RwLock::new(provider_cfg));
 
         // 生成 local-provider.ts（必须在 pi 启动前写入）
-        let ts_content = crate::provider::generate_local_provider_ts(
-            &*shared.read().await,
-            shared.read().await.port,
-        );
-        let pi_home = std::env::var("PI_CODING_AGENT_DIR")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|_| {
-                std::env::var("HOME")
-                    .map(|h| std::path::PathBuf::from(h).join(".pi").join("agent"))
-                    .unwrap_or_default()
-            });
-        let ext_dir = pi_home.join("extensions");
-        let _ = std::fs::create_dir_all(&ext_dir);
-        let _ = std::fs::write(ext_dir.join("local-provider.ts"), &ts_content);
-        let model_count: usize = shared
-            .read()
-            .await
-            .providers
-            .iter()
-            .map(|p| p.models.len())
-            .sum();
-        tracing::info!("local-provider.ts generated with {} models", model_count);
+        crate::provider::regenerate_local_provider_ts(&*shared.read().await);
 
         // 启动 axum router
         let router_shared = shared.clone();
