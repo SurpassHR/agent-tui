@@ -271,6 +271,95 @@ fn translate_single_action(event: PiEvent, agent_id: &str) -> Option<Action> {
     }
 }
 
+
+// ── 快照功能 ──
+
+/// 将 Ratatui Buffer 画面保存到文本文件。
+/// 在 draw 回调内部调用，此时 buffer 有完整的渲染内容。
+fn save_tui_snapshot(buf: &ratatui::buffer::Buffer) -> crate::errors::Result<String> {
+    let (dt, fn_ts) = current_timestamp_pair();
+
+    let config_dir = if let Ok(val) = std::env::var("XDG_CONFIG_HOME") {
+        std::path::PathBuf::from(val)
+    } else if let Ok(home) = std::env::var("HOME") {
+        std::path::PathBuf::from(home).join(".config")
+    } else {
+        std::path::PathBuf::from(".")
+    };
+    let snap_dir = config_dir.join("agent-tui").join("snapshots");
+    std::fs::create_dir_all(&snap_dir)?;
+
+    let path = snap_dir.join(format!("snapshot-{}.txt", fn_ts));
+
+    let mut text = format!("─── Snapshot: {} ─────────────────\n\n", dt);
+    for y in 0..buf.area.height {
+        let mut skip_next = false;
+        for x in 0..buf.area.width {
+            if skip_next {
+                skip_next = false;
+                continue;
+            }
+            let s = buf[(x, y)].symbol();
+            text.push_str(s);
+            // CJK 宽字符占 2 列，第二个格子无论空格还是空串都跳过
+            if unicode_width::UnicodeWidthStr::width(s) >= 2 {
+                skip_next = true;
+            }
+        }
+        text.push('\n');
+    }
+
+    std::fs::write(&path, text)?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// 返回 (人类可读时间, 文件名用时间戳)。
+fn current_timestamp_pair() -> (String, String) {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let d = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    let total_secs = d.as_secs();
+    let days = total_secs / 86400;
+    let time_secs = total_secs % 86400;
+    let h = time_secs / 3600;
+    let m = (time_secs % 3600) / 60;
+    let s = time_secs % 60;
+
+    let (y, month, day) = days_to_date(days as i64);
+    let dt = format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", y, month, day, h, m, s);
+    let fn_ts = format!("{:04}{:02}{:02}-{:02}{:02}{:02}", y, month, day, h, m, s);
+    (dt, fn_ts)
+}
+
+/// 将 Unix 天数（自 1970-01-01）转换为 (年, 月, 日)。
+fn days_to_date(mut days: i64) -> (i64, u32, u32) {
+    let mut y = 1970i64;
+    loop {
+        let days_in_year = if is_leap(y) { 366 } else { 365 };
+        if days < days_in_year {
+            break;
+        }
+        days -= days_in_year;
+        y += 1;
+    }
+    let leap = is_leap(y);
+    const MONTH_DAYS: [u32; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    for (i, &md) in MONTH_DAYS.iter().enumerate() {
+        let adj = if i == 1 && leap { 29 } else { md };
+        if (days as u32) < adj {
+            return (y, (i + 1) as u32, days as u32 + 1);
+        }
+        days -= adj as i64;
+    }
+    (y, 12, 31)
+}
+
+fn is_leap(y: i64) -> bool {
+    (y % 400 == 0) || (y % 4 == 0 && y % 100 != 0)
+}
+
+
 #[cfg(test)]
 mod event_translation_tests {
     use super::*;
@@ -639,6 +728,21 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                 // 渲染
                 let _ = terminal.try_draw(|f| {
                     app.render_tui(f);
+                    // 快照：在 swap_buffers 之前捕获 buffer（否则 current_buffer 会被重置为空白）
+                    if std::mem::take(&mut app.tui.snapshot_pending) {
+                        let buf = f.buffer_mut();
+                        match save_tui_snapshot(buf) {
+                            Ok(path) => {
+                                app.tui.bottom_bar.status =
+                                    format!("📷 Snapshot: {}", path);
+                            }
+                            Err(e) => {
+                                tracing::error!("快照保存失败: {}", e);
+                                app.tui.bottom_bar.status =
+                                    format!("❌ Snapshot: {}", e);
+                            }
+                        }
+                    }
                     Ok::<_, std::io::Error>(())
                 });
 
@@ -1917,32 +2021,37 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
                                         if !trimmed.is_empty() {
                                             input_buffer.clear();
                                             cursor_position = 0;
-                                            app.handle_action(Action::UserSubmitInput(
-                                                trimmed.clone(),
-                                            ))
-                                            .await
-                                            .ok();
-                                            // 路由到当前活跃 session 的 pi 进程（非默认 session 时用 agent_manager 中的客户端）
-                                            let agent_id = app
-                                                .active_agent
-                                                .clone()
-                                                .unwrap_or_else(|| "default".to_string());
-                                            if let Some(session_client) =
-                                                app.agent_manager.client_mut(&agent_id)
-                                            {
-                                                let _ = session_client
-                                                    .notify(serde_json::json!({
-                                                        "type": "prompt",
-                                                        "message": trimmed,
-                                                    }))
-                                                    .await;
+                                            // ── 快照命令：标记为待保存，在下次渲染时捕获 buffer ──
+                                            if trimmed == "/snapshot" {
+                                                app.tui.snapshot_pending = true;
                                             } else {
-                                                let _ = client
-                                                    .notify(serde_json::json!({
-                                                        "type": "prompt",
-                                                        "message": trimmed,
-                                                    }))
-                                                    .await;
+                                                app.handle_action(Action::UserSubmitInput(
+                                                    trimmed.clone(),
+                                                ))
+                                                .await
+                                                .ok();
+                                                // 路由到当前活跃 session 的 pi 进程（非默认 session 时用 agent_manager 中的客户端）
+                                                let agent_id = app
+                                                    .active_agent
+                                                    .clone()
+                                                    .unwrap_or_else(|| "default".to_string());
+                                                if let Some(session_client) =
+                                                    app.agent_manager.client_mut(&agent_id)
+                                                {
+                                                    let _ = session_client
+                                                        .notify(serde_json::json!({
+                                                            "type": "prompt",
+                                                            "message": trimmed,
+                                                        }))
+                                                        .await;
+                                                } else {
+                                                    let _ = client
+                                                        .notify(serde_json::json!({
+                                                            "type": "prompt",
+                                                            "message": trimmed,
+                                                        }))
+                                                        .await;
+                                                }
                                             }
                                         }
                                     }
@@ -2412,3 +2521,5 @@ mod tests {
         assert_eq!(cycle_thinking_level("high", Some(&map)), "xhigh");
     }
 }
+
+

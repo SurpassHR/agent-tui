@@ -324,15 +324,13 @@ pub(crate) fn load_session_messages(path: &str) -> Result<Vec<ChatMessage>, Stri
                             .or_else(|| block.get("content"))
                             .or_else(|| block.get("output"));
                         // 尝试找到匹配的 tool_use block 并回填 result
-                        if let Some(existing) = content_blocks.iter_mut().rev().find(
-                            |cb| matches!(cb, ContentBlock::ToolCall { id, .. } if id == &tool_id),
-                        ) {
-                            if let ContentBlock::ToolCall {
-                                ref mut result,
-                                ref mut is_error,
-                                ..
-                            } = existing
-                            {
+                        if let Some(ContentBlock::ToolCall {
+                            ref mut result,
+                            ref mut is_error,
+                            ..
+                        }) = content_blocks.iter_mut().rev().find(|cb| {
+                            matches!(cb, ContentBlock::ToolCall { id, .. } if id == &tool_id)
+                        }) {
                                 let result_content = result_val
                                     .and_then(|v| v.as_str())
                                     .map(|s| serde_json::json!({"content": s}))
@@ -342,7 +340,6 @@ pub(crate) fn load_session_messages(path: &str) -> Result<Vec<ChatMessage>, Stri
                                     .get("is_error")
                                     .and_then(|v| v.as_bool())
                                     .unwrap_or(false);
-                            }
                         }
                     }
                     _ => {}

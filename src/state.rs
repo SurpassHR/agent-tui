@@ -224,6 +224,8 @@ pub struct TuiState {
     pub confirm_delete: Option<ConfirmDelete>,
     /// 手动创建 session 的名称映射（session_id → name，供 extract_session_name 查找）
     pub session_names: HashMap<String, String>,
+    /// 标记下次渲染时保存 TUI 快照
+    pub snapshot_pending: bool,
 }
 
 /// 删除确认弹窗的待确认信息

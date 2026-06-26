@@ -4,6 +4,12 @@ use crate::state::*;
 use crate::theme::Theme;
 use crossterm::event::KeyCode;
 
+impl Default for TuiState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TuiState {
     pub fn new() -> Self {
         Self {
@@ -51,6 +57,7 @@ impl TuiState {
             rename_input: String::new(),
             confirm_delete: None,
             session_names: std::collections::HashMap::new(),
+            snapshot_pending: false,
         }
     }
 
