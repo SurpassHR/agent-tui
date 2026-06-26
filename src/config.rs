@@ -29,6 +29,9 @@ pub struct Config {
     /// 仅打印配置信息（sessions/extensions/skills/mcps），不启动 pi 进程
     #[arg(long = "dry-run", default_value_t = false)]
     pub dry_run: bool,
+    /// 独立启动 Provider Router（带配置管理 TUI）
+    #[arg(long = "router", default_value_t = false)]
+    pub router: bool,
 }
 
 impl Config {

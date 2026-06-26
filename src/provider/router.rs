@@ -11,6 +11,9 @@ use axum::{
 use reqwest::Client;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::pin::Pin;
+use std::future::Future;
+
 
 use super::{ProviderConfig, SharedConfig};
 
@@ -21,7 +24,10 @@ struct AppState {
 }
 
 /// 启动 axum HTTP 服务器，返回实际绑定的端口
-pub async fn start_router(config: SharedConfig) -> Result<u16, crate::errors::Error> {
+pub async fn start_router(
+    config: SharedConfig,
+    shutdown: Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
+) -> Result<u16, crate::errors::Error> {
     let port = {
         let cfg = config.read().await;
         cfg.port
@@ -49,9 +55,13 @@ pub async fn start_router(config: SharedConfig) -> Result<u16, crate::errors::Er
         match tokio::net::TcpListener::bind(addr).await {
             Ok(listener) => {
                 tracing::info!("Provider router listening on :{}", try_port);
-                axum::serve(listener, app)
-                    .await
-                    .map_err(|e| crate::errors::Error::Config(format!("axum serve: {}", e)))?;
+                let serve = axum::serve(listener, app);
+                if let Some(signal) = shutdown {
+                    serve.with_graceful_shutdown(signal).await
+                } else {
+                    serve.await
+                }
+                .map_err(|e| crate::errors::Error::Config(format!("axum serve: {}", e)))?;
                 return Ok(try_port);
             }
             Err(_e) if try_port < port + 10 => {

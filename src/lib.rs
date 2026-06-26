@@ -38,6 +38,7 @@ pub mod state;
 pub mod theme;
 pub mod tui;
 pub mod tui_state;
+pub mod router_tui;
 pub mod utils;
 
 // 重新导出常用类型

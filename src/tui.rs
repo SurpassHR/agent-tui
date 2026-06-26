@@ -505,7 +505,7 @@ pub async fn run_tui(mut app: App, _action_rx: mpsc::Receiver<Action>) -> Result
         let (port_tx, mut port_rx) = tokio::sync::oneshot::channel::<u16>();
         app.tui.router_running = true;
         tokio::spawn(async move {
-            match crate::provider::router::start_router(router_shared).await {
+            match crate::provider::router::start_router(router_shared, None).await {
                 Ok(actual_port) => {
                     tracing::info!("Provider router started on port {}", actual_port);
                     let _ = port_tx.send(actual_port);

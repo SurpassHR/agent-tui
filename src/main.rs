@@ -19,6 +19,12 @@ fn main() -> color_eyre::Result<()> {
         return Ok(());
     }
 
+    if config.router {
+        let rt = tokio::runtime::Runtime::new()?;
+        rt.block_on(meta_tui::router_tui::run_router_tui())?;
+        return Ok(());
+    }
+
     // TUI 模式
     let (action_tx, action_rx) = tokio::sync::mpsc::channel(1024);
     let app = meta_tui::app::App::new_rpc(action_tx);
