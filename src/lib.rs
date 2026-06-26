@@ -20,6 +20,11 @@
 
 pub mod action;
 pub mod app;
+pub mod app_drop;
+pub mod app_render;
+pub mod app_state_ops;
+#[cfg(test)]
+pub mod app_tests;
 pub mod backend;
 pub mod components;
 pub mod config;
@@ -29,8 +34,11 @@ pub mod message;
 pub mod persistence;
 pub mod provider;
 pub mod selection;
+pub mod state;
 pub mod theme;
 pub mod tui;
+pub mod tui_state;
+pub mod utils;
 
 // 重新导出常用类型
 pub use action::Action;
