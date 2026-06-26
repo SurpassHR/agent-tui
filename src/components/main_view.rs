@@ -140,7 +140,7 @@ impl MainView {
         match message.role {
             ChatRole::User => {
                 let clean = crate::strip_ansi(&message.text);
-                let md_lines = markdown::render(&clean, theme);
+                let md_lines = markdown::render(&clean, theme, max_width);
 
                 if md_lines.is_empty() {
                     return lines;
@@ -190,7 +190,7 @@ impl MainView {
                         }
                     }
                     let clean = crate::strip_ansi(&message.text);
-                    let md_lines = markdown::render(&clean, theme);
+                    let md_lines = markdown::render(&clean, theme, max_width);
                     for md_line in md_lines {
                         let mut spans = vec![Span::from(" ")];
                         spans.extend(md_line.spans.into_iter());
@@ -259,7 +259,7 @@ impl MainView {
                         },
                         crate::message::ContentBlock::Text { text } => {
                             let clean = crate::strip_ansi(text);
-                            let md_lines = markdown::render(&clean, theme);
+                            let md_lines = markdown::render(&clean, theme, max_width);
                             for md_line in md_lines {
                                 let mut spans = vec![Span::from(" ")];
                                 spans.extend(md_line.spans.into_iter());
@@ -372,7 +372,7 @@ impl MainView {
 
             ChatRole::System => {
                 let clean = crate::strip_ansi(&message.text);
-                let md_lines = markdown::render(&clean, theme);
+                let md_lines = markdown::render(&clean, theme, max_width);
                 for md_line in md_lines {
                     let mut spans = vec![Span::from(" ")];
                     spans.extend(md_line.spans.into_iter());
@@ -383,7 +383,7 @@ impl MainView {
 
             ChatRole::Error => {
                 let clean = crate::strip_ansi(&message.text);
-                let md_lines = markdown::render(&clean, theme);
+                let md_lines = markdown::render(&clean, theme, max_width);
                 for md_line in md_lines {
                     let mut spans = vec![Span::from(" ⚠ ")];
                     spans.extend(md_line.spans.into_iter());
@@ -640,7 +640,7 @@ impl MainView {
         lines.push(Line::from(vec![header.fg(theme.text_dim)]));
 
         let clean = crate::strip_ansi(content);
-        let md_lines = markdown::render(&clean, theme);
+        let md_lines = markdown::render(&clean, theme, inner.width);
         for md_line in md_lines {
             let mut spans = vec![Span::from(" ")];
             spans.extend(md_line.spans.into_iter());

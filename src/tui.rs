@@ -271,7 +271,6 @@ fn translate_single_action(event: PiEvent, agent_id: &str) -> Option<Action> {
     }
 }
 
-
 // ── 快照功能 ──
 
 /// 将 Ratatui Buffer 画面保存到文本文件。
@@ -327,7 +326,10 @@ fn current_timestamp_pair() -> (String, String) {
     let s = time_secs % 60;
 
     let (y, month, day) = days_to_date(days as i64);
-    let dt = format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", y, month, day, h, m, s);
+    let dt = format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+        y, month, day, h, m, s
+    );
     let fn_ts = format!("{:04}{:02}{:02}-{:02}{:02}{:02}", y, month, day, h, m, s);
     (dt, fn_ts)
 }
@@ -358,7 +360,6 @@ fn days_to_date(mut days: i64) -> (i64, u32, u32) {
 fn is_leap(y: i64) -> bool {
     (y % 400 == 0) || (y % 4 == 0 && y % 100 != 0)
 }
-
 
 #[cfg(test)]
 mod event_translation_tests {
@@ -2521,5 +2522,3 @@ mod tests {
         assert_eq!(cycle_thinking_level("high", Some(&map)), "xhigh");
     }
 }
-
-

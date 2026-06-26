@@ -328,18 +328,18 @@ pub(crate) fn load_session_messages(path: &str) -> Result<Vec<ChatMessage>, Stri
                             ref mut result,
                             ref mut is_error,
                             ..
-                        }) = content_blocks.iter_mut().rev().find(|cb| {
-                            matches!(cb, ContentBlock::ToolCall { id, .. } if id == &tool_id)
-                        }) {
-                                let result_content = result_val
-                                    .and_then(|v| v.as_str())
-                                    .map(|s| serde_json::json!({"content": s}))
-                                    .or_else(|| result_val.cloned());
-                                *result = result_content;
-                                *is_error = block
-                                    .get("is_error")
-                                    .and_then(|v| v.as_bool())
-                                    .unwrap_or(false);
+                        }) = content_blocks.iter_mut().rev().find(
+                            |cb| matches!(cb, ContentBlock::ToolCall { id, .. } if id == &tool_id),
+                        ) {
+                            let result_content = result_val
+                                .and_then(|v| v.as_str())
+                                .map(|s| serde_json::json!({"content": s}))
+                                .or_else(|| result_val.cloned());
+                            *result = result_content;
+                            *is_error = block
+                                .get("is_error")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false);
                         }
                     }
                     _ => {}

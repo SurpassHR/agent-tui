@@ -20,7 +20,7 @@ use crate::theme::Theme;
 /// # 返回
 ///
 /// 可直接传入 `Paragraph::new()` 的 `Vec<Line<'static>>`
-pub fn render(text: &str, theme: &Theme) -> Vec<Line<'static>> {
+pub fn render(text: &str, theme: &Theme, max_width: u16) -> Vec<Line<'static>> {
     // 如果文本不含任何 Markdown 标记字符，走快速路径直接返回纯文本行
     if !needs_markdown(text) {
         return text
@@ -33,7 +33,7 @@ pub fn render(text: &str, theme: &Theme) -> Vec<Line<'static>> {
     options.insert(Options::ENABLE_TABLES);
     options.insert(Options::ENABLE_STRIKETHROUGH);
     let parser = Parser::new_ext(text, options);
-    let mut renderer = MarkdownRenderer::new(theme);
+    let mut renderer = MarkdownRenderer::new(theme, max_width);
     renderer.process(parser);
     renderer.finish()
 }
@@ -61,6 +61,8 @@ fn needs_markdown(text: &str) -> bool {
 /// Markdown → Ratatui Line 渲染器状态机
 struct MarkdownRenderer<'a> {
     theme: &'a Theme,
+    /// 可用显示宽度（终端列数），emit_code_block() 和 emit_table() 用于折行
+    max_width: u16,
     /// 输出行缓冲区
     lines: Vec<Line<'static>>,
     /// 当前行正在构建的 Span 列表
@@ -102,9 +104,10 @@ struct MarkdownRenderer<'a> {
 }
 
 impl<'a> MarkdownRenderer<'a> {
-    fn new(theme: &'a Theme) -> Self {
+    fn new(theme: &'a Theme, max_width: u16) -> Self {
         Self {
             theme,
+            max_width,
             lines: Vec::new(),
             current_spans: Vec::new(),
             buf: String::new(),
@@ -554,8 +557,23 @@ impl<'a> MarkdownRenderer<'a> {
             .map(|l| unicode_width::UnicodeWidthStr::width(l.as_str()))
             .max()
             .unwrap_or(0);
-        // │ {num} │ {code_line}  │ — 固定框架 3 个 │ + 5 个空格 = 8 字符
-        let total_width = (content_max_w + num_width + 8).max(20);
+        // 受 max_width 约束：前缀开销 = num_width + 5，右 border = 1，最少 gap = 1
+        // 预留 1 字符给 main_view 前缀空格，否则每行会被 Paragraph 折 1 字符
+        let effective_max = (self.max_width as usize).saturating_sub(1);
+        let content_overhead = num_width + 7;
+        let max_content_w = if effective_max > content_overhead {
+            effective_max - content_overhead
+        } else {
+            content_max_w
+        };
+        let effective_content_w = content_max_w.min(max_content_w);
+        let total_width = if self.max_width > 0 && content_max_w > max_content_w {
+            (effective_content_w + num_width + 8)
+                .max(20)
+                .min(effective_max)
+        } else {
+            (content_max_w + num_width + 8).max(20)
+        };
 
         // 顶部边框（总宽匹配 body，包含左右两个角）
         let top = if self.code_block_lang.is_empty() {
@@ -569,15 +587,27 @@ impl<'a> MarkdownRenderer<'a> {
         self.lines.push(Line::from(Span::styled(top, border_style)));
 
         for (i, code_line) in self.code_block_lines.iter().enumerate() {
-            let num = format!("{:>width$}", i + 1, width = num_width);
-            // 先构建不包含尾部 │ 的部分，计算已用宽度
-            let prefix_and_code = format!("│ {} │ {}", num, code_line);
-            let used = unicode_width::UnicodeWidthStr::width(prefix_and_code.as_str());
-            // 尾部 │ 固定在 total_width - 1 位置，中间用空格填充
-            let gap = total_width.saturating_sub(used + 1); // +1 给尾部 │
-            let padded = format!("{prefix_and_code}{}│", " ".repeat(gap));
-            self.lines
-                .push(Line::from(Span::styled(padded, body_style)));
+            let code_w = unicode_width::UnicodeWidthStr::width(code_line.as_str());
+            let segments = if code_w > effective_content_w {
+                split_at_width(code_line, effective_content_w)
+            } else {
+                vec![code_line.clone()]
+            };
+
+            for (seg_idx, segment) in segments.iter().enumerate() {
+                let num_str = if seg_idx == 0 {
+                    format!("{:>width$}", i + 1, width = num_width)
+                } else {
+                    " ".repeat(num_width)
+                };
+
+                let prefix_and_code = format!("│ {} │ {}", num_str, segment);
+                let used = unicode_width::UnicodeWidthStr::width(prefix_and_code.as_str());
+                let gap = total_width.saturating_sub(used + 1);
+                let padded = format!("{prefix_and_code}{}│", " ".repeat(gap));
+                self.lines
+                    .push(Line::from(Span::styled(padded, body_style)));
+            }
         }
 
         // 底部边框
@@ -628,6 +658,38 @@ impl<'a> MarkdownRenderer<'a> {
             *w = (*w).max(3);
         }
 
+        // 如果表格总宽超过 max_width，按比例收缩列宽
+        if self.max_width > 0 {
+            // 预留 1 字符给 main_view 前缀空格
+            let effective_max = (self.max_width as usize).saturating_sub(1);
+            let border_overhead = 3 * num_cols + 1;
+            let natural_width: usize = col_widths.iter().sum::<usize>() + border_overhead;
+            if natural_width > effective_max {
+                let available = effective_max.saturating_sub(border_overhead);
+                let total_natural: usize = col_widths.iter().sum();
+                if total_natural > 0 && available > 0 {
+                    let mut shrunk: Vec<usize> = col_widths
+                        .iter()
+                        .map(|&w| {
+                            let s = (w as f64 * available as f64 / total_natural as f64).round()
+                                as usize;
+                            s.max(3)
+                        })
+                        .collect();
+                    // 分配剩余宽度
+                    let used_after: usize = shrunk.iter().sum();
+                    let mut remaining = available.saturating_sub(used_after);
+                    let mut idx = 0;
+                    while remaining > 0 && idx < num_cols {
+                        shrunk[idx % num_cols] += 1;
+                        remaining = remaining.saturating_sub(1);
+                        idx += 1;
+                    }
+                    col_widths = shrunk;
+                }
+            }
+        }
+
         // 构建对齐函数
         let align = |text: &str, width: usize, ci: usize| -> String {
             let w = unicode_width::UnicodeWidthStr::width(text);
@@ -667,17 +729,38 @@ impl<'a> MarkdownRenderer<'a> {
             let is_header = ri < header_count;
             let style = if is_header { header_style } else { cell_style };
 
-            // 渲染数据行
-            let cells: Vec<String> = (0..num_cols)
+            // 将每个单元格按列宽切分
+            let cell_segments: Vec<Vec<String>> = (0..num_cols)
                 .map(|ci| {
                     let text = row.get(ci).map(|s| s.as_str()).unwrap_or("");
-                    align(text, col_widths[ci], ci)
+                    let w = col_widths[ci];
+                    if unicode_width::UnicodeWidthStr::width(text) > w {
+                        split_at_width(text, w)
+                    } else {
+                        vec![text.to_string()]
+                    }
                 })
                 .collect();
-            let row_text = format!("│ {} │", cells.join(" │ "));
-            self.lines.push(Line::from(Span::styled(row_text, style)));
 
-            // 每一行之间保持水平分隔，避免窄终端中表格内容读成连续段落。
+            // 计算最大折行数
+            let max_lines = cell_segments.iter().map(|s| s.len()).max().unwrap_or(1);
+
+            // 渲染 N 行
+            for line_idx in 0..max_lines {
+                let cells: Vec<String> = (0..num_cols)
+                    .map(|ci| {
+                        let seg = cell_segments[ci]
+                            .get(line_idx)
+                            .map(|s| s.as_str())
+                            .unwrap_or("");
+                        align(seg, col_widths[ci], ci)
+                    })
+                    .collect();
+                let row_text = format!("│ {} │", cells.join(" │ "));
+                self.lines.push(Line::from(Span::styled(row_text, style)));
+            }
+
+            // 行间分隔线（仅在有下一行时输出一次）
             if ri + 1 < self.table_rows.len() {
                 self.lines.push(Line::from(Span::styled(
                     table_border(&col_widths, '├', '┼', '┤'),
@@ -704,6 +787,39 @@ fn table_border(col_widths: &[usize], left: char, junction: char, right: char) -
     format!("{left}{segments}{right}")
 }
 
+/// 按 Unicode 显示宽度在字符边界切分文本
+///
+/// 将 text 切分为多段，每段的 `unicode_width` 不超过 `max_width`。
+/// 不会在单词边界切分（适用于代码/URL 等不应破坏词的内容）。
+/// 如果 `max_width` 小于 1，返回单元素 Vec（text 本身）。
+fn split_at_width(text: &str, max_width: usize) -> Vec<String> {
+    if text.is_empty() {
+        return vec![String::new()];
+    }
+    if max_width < 1 {
+        return vec![text.to_string()];
+    }
+
+    let mut segments: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut current_w = 0usize;
+
+    for c in text.chars() {
+        let cw = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+        if current_w + cw > max_width && !current.is_empty() {
+            segments.push(std::mem::take(&mut current));
+            current_w = 0;
+        }
+        current.push(c);
+        current_w += cw;
+    }
+    if !current.is_empty() {
+        segments.push(current);
+    }
+
+    segments
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -712,7 +828,7 @@ mod tests {
     #[test]
     fn test_plain_text_no_markdown() {
         let theme = Theme::cyan();
-        let lines = render("Hello World", &theme);
+        let lines = render("Hello World", &theme, 80);
         assert_eq!(lines.len(), 1);
         assert!(lines[0].spans.iter().any(|s| s.content.contains("Hello")));
     }
@@ -720,7 +836,7 @@ mod tests {
     #[test]
     fn test_bold_text() {
         let theme = Theme::cyan();
-        let lines = render("Hello **World**!", &theme);
+        let lines = render("Hello **World**!", &theme, 80);
         // 应该有 bold 修饰
         let has_bold = lines.iter().any(|line| {
             line.spans.iter().any(|s| {
@@ -740,7 +856,7 @@ mod tests {
     #[test]
     fn test_inline_code() {
         let theme = Theme::cyan();
-        let lines = render("Use `cargo build` to compile", &theme);
+        let lines = render("Use `cargo build` to compile", &theme, 80);
         // 内联代码应有特殊背景色
         let has_code = lines
             .iter()
@@ -751,7 +867,7 @@ mod tests {
     #[test]
     fn test_heading() {
         let theme = Theme::cyan();
-        let lines = render("# Hello", &theme);
+        let lines = render("# Hello", &theme, 80);
         let has_heading = lines.iter().any(|line| {
             line.spans.iter().any(|s| {
                 s.content.contains("Hello") && s.style.add_modifier.contains(Modifier::BOLD)
@@ -763,7 +879,7 @@ mod tests {
     #[test]
     fn test_code_block() {
         let theme = Theme::cyan();
-        let lines = render("```rust\nfn main() {}\n```", &theme);
+        let lines = render("```rust\nfn main() {}\n```", &theme, 80);
         let has_code = lines
             .iter()
             .any(|line| line.spans.iter().any(|s| s.content.contains("fn main")));
@@ -773,7 +889,7 @@ mod tests {
     #[test]
     fn test_blockquote() {
         let theme = Theme::cyan();
-        let lines = render("> quoted text", &theme);
+        let lines = render("> quoted text", &theme, 80);
         let has_quote = lines
             .iter()
             .any(|line| line.spans.iter().any(|s| s.content.contains("quoted text")));
@@ -783,7 +899,7 @@ mod tests {
     #[test]
     fn test_unordered_list() {
         let theme = Theme::cyan();
-        let lines = render("- item one\n- item two", &theme);
+        let lines = render("- item one\n- item two", &theme, 80);
         let has_bullet = lines
             .iter()
             .any(|line| line.spans.iter().any(|s| s.content.contains('•')));
@@ -793,14 +909,14 @@ mod tests {
     #[test]
     fn test_empty_input() {
         let theme = Theme::cyan();
-        let lines = render("", &theme);
+        let lines = render("", &theme, 80);
         assert!(lines.is_empty() || lines.iter().all(|l| l.spans.is_empty()));
     }
 
     #[test]
     fn test_link_renders_text() {
         let theme = Theme::cyan();
-        let lines = render("[click here](https://example.com)", &theme);
+        let lines = render("[click here](https://example.com)", &theme, 80);
         let has_text = lines
             .iter()
             .any(|line| line.spans.iter().any(|s| s.content.contains("click here")));
@@ -813,6 +929,7 @@ mod tests {
         let lines = render(
             "| 名称 | 版本 |\n|------|------|\n| Rust | 1.85 |\n| Tokio | 1.0 |\n",
             &theme,
+            80,
         );
         // 应包含表头和数据
         let has_name = lines
@@ -833,7 +950,11 @@ mod tests {
     fn test_table_with_alignment() {
         let theme = Theme::cyan();
         // 右对齐的数字列
-        let lines = render("| 项目 | 数量 |\n|:-----|-----:|\n| A | 123 |\n", &theme);
+        let lines = render(
+            "| 项目 | 数量 |\n|:-----|-----:|\n| A | 123 |\n",
+            &theme,
+            80,
+        );
         let has_project = lines
             .iter()
             .any(|line| line.spans.iter().any(|s| s.content.contains("项目")));
@@ -850,6 +971,7 @@ mod tests {
         let lines = render(
             "| x | y |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n| 5 | 6 |\n",
             &theme,
+            80,
         );
         let mut count_1 = 0;
         for line in &lines {
@@ -871,6 +993,7 @@ mod tests {
         let lines = render(
             "| Commit | 说明 |\n|---|---|\n| `5670948` | 添加依赖 |\n| `1fca916` | 创建渲染器 |\n",
             &theme,
+            80,
         );
         let rendered = lines_to_text(&lines);
 
@@ -885,7 +1008,7 @@ mod tests {
     #[test]
     fn table_should_render_horizontal_separator_between_body_rows() {
         let theme = Theme::cyan();
-        let lines = render("| A | B |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n", &theme);
+        let lines = render("| A | B |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n", &theme, 80);
         let rendered = lines_to_text(&lines);
         let separator_count = rendered.lines().filter(|line| line.contains('├')).count();
 
@@ -913,10 +1036,62 @@ mod tests {
         // 管道符在代码块内不应被 ENABLE_TABLES 误解析为表格
         let theme = Theme::cyan();
         let input = "```rust\nlet f = |x| x + 1;\nlet g = |y| y * 2;\n```";
-        let lines = render(input, &theme);
+        let lines = render(input, &theme, 80);
         let rendered = lines_to_text(&lines);
         assert!(rendered.contains("let f"), "{rendered}");
         assert!(rendered.contains("let g"), "{rendered}");
         assert!(rendered.contains('|'), "pipe char preserved: {rendered}");
+    }
+
+    #[test]
+    fn code_block_with_long_line_should_wrap() {
+        let theme = Theme::cyan();
+        let long_line = format!("// {}", "a".repeat(120));
+        let input = format!("```rust\n{}\nlet x = 1;\n```", long_line);
+        let lines = render(&input, &theme, 40);
+        let rendered = lines_to_text(&lines);
+        assert!(rendered.contains("┌"), "Should have top border");
+        assert!(rendered.contains("└"), "Should have bottom border");
+        let code_lines: Vec<&str> = rendered.lines().filter(|l| l.contains('a')).collect();
+        assert!(
+            code_lines.len() > 1,
+            "Long line should be wrapped into multiple lines, got lines={}: {:?}",
+            code_lines.len(),
+            code_lines
+        );
+    }
+
+    #[test]
+    fn code_block_short_line_should_not_wrap() {
+        let theme = Theme::cyan();
+        let input = "```rust\nfn main() {}\n```";
+        let lines = render(input, &theme, 80);
+        let rendered = lines_to_text(&lines);
+        let code_lines: Vec<&str> = rendered.lines().filter(|l| l.contains("fn main")).collect();
+        assert_eq!(code_lines.len(), 1, "Short line should not wrap");
+    }
+
+    #[test]
+    fn code_block_wrap_continuation_no_line_number() {
+        let theme = Theme::cyan();
+        let long_line = format!("let x = \"{}\";", "a".repeat(100));
+        let input = format!("```rust\n{}\n```", long_line);
+        let lines = render(&input, &theme, 40);
+        let rendered = lines_to_text(&lines);
+        let content_lines: Vec<&str> = rendered.lines().filter(|l| l.contains("│")).collect();
+        assert!(
+            content_lines.len() >= 4,
+            "Should have multiple content lines"
+        );
+    }
+
+    #[test]
+    fn table_with_fit_content_should_not_shrink() {
+        let theme = Theme::cyan();
+        let input = "| A |\n|---|\n| short |\n";
+        let lines = render(input, &theme, 80);
+        let rendered = lines_to_text(&lines);
+        let data_lines: Vec<&str> = rendered.lines().filter(|l| l.contains("short")).collect();
+        assert_eq!(data_lines.len(), 1, "Short content should not wrap");
     }
 }
