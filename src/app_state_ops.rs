@@ -2,7 +2,7 @@ use crate::app::App;
 use crate::state::{McpInfo, SessionNode, SubAgentInfo, WorkspaceNode};
 use crate::utils::{
     compute_display_names, dirs_for, extract_session_name, extract_workspace_cwd,
-    load_session_messages, parse_agent_md, parse_skill_md, pi_sessions_dir,
+    load_session_messages, parse_agent_md, parse_skill_md, pi_sessions_dir, session_has_messages,
 };
 
 impl App {
@@ -154,12 +154,17 @@ impl App {
                 // 构建会话列表
                 let mut sessions = Vec::new();
                 for fp in &jsonl_files {
+                    // 跳过空壳 session（只有 session header + model_change，无实际消息）
+                    // 这些是 CreateSession 预创建但 pi 从未写入消息的遗留文件
+                    if !session_has_messages(fp) {
+                        continue;
+                    }
                     let id = fp
                         .file_stem()
                         .map(|n| n.to_string_lossy().to_string())
                         .unwrap_or_default();
                     let name = self.tui.session_names.get(&id).cloned().unwrap_or_else(|| {
-                        extract_session_name(fp).unwrap_or_else(|| "New Session".to_string())
+                        extract_session_name(fp).unwrap_or_else(|| "未知".to_string())
                     });
                     let message_count = if let Ok(content) = std::fs::read_to_string(fp) {
                         content.lines().count()

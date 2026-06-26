@@ -154,6 +154,8 @@ pub(crate) fn compute_display_names(workspaces: &mut [WorkspaceNode]) {
 /// 否则取第一条 `user` 消息的文本内容（截取 35 字符）。
 pub(crate) fn extract_session_name(path: &std::path::Path) -> Option<String> {
     let content = std::fs::read_to_string(path).ok()?;
+    // Keep track of session creation timestamp for fallback display
+    let mut session_time: Option<String> = None;
     for line in content.lines().take(20) {
         let line = line.trim();
         if line.is_empty() {
@@ -162,6 +164,13 @@ pub(crate) fn extract_session_name(path: &std::path::Path) -> Option<String> {
         let val: serde_json::Value = serde_json::from_str(line).ok()?;
         let ty = val.get("type").and_then(|v| v.as_str()).unwrap_or("");
         match ty {
+            "session" => {
+                // Save timestamp for fallback
+                session_time = val
+                    .get("timestamp")
+                    .and_then(|v| v.as_str())
+                    .map(format_session_time);
+            }
             "session_name" => {
                 return val.get("name").and_then(|v| v.as_str()).map(|s| {
                     let trimmed = s.trim();
@@ -197,7 +206,15 @@ pub(crate) fn extract_session_name(path: &std::path::Path) -> Option<String> {
             _ => continue,
         }
     }
-    None
+    // Fallback: return session creation time instead of "New Session"
+    session_time
+}
+
+/// 将 ISO 8601 时间戳格式化为简短显示 "MM-DD HH:mm"
+fn format_session_time(ts: &str) -> String {
+    let date_part = ts.get(5..10).unwrap_or("??-??");
+    let time_part = ts.get(11..16).unwrap_or("??:??");
+    format!("{date_part} {time_part}")
 }
 
 /// 获取 pi sessions 目录
@@ -542,4 +559,27 @@ pub(crate) fn build_ai_rename_prompt(session_content: &str, current_name: &str) 
     format!(
         "请为以下对话生成 3 个候选会话名称（简短、描述性的英文名，用连字符连接）。当前名称为「{current_name}」。\n\n对话概要:\n  {user_summary}\n\n请只输出 3 个候选名称，每行一个，不要编号或其他文字。"
     )
+}
+
+/// 检查 JSONL 文件中是否有任何 `type: "message"` 条目
+///
+/// 用于过滤只有 session header + model_change 的空壳文件。
+/// 如果文件不包含任何实际对话消息，返回 `false`。
+pub(crate) fn session_has_messages(path: &std::path::Path) -> bool {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
+            if val.get("type").and_then(|v| v.as_str()) == Some("message") {
+                return true;
+            }
+        }
+    }
+    false
 }
