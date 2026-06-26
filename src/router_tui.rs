@@ -11,7 +11,7 @@ use futures::FutureExt;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{List, ListItem, Paragraph};
+use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 use ratatui::Frame;
 use tokio::sync::RwLock;
 
@@ -189,6 +189,38 @@ async fn run_event_loop(
 
 fn render(frame: &mut Frame, state: &mut RouterTuiState) {
     let area = frame.area();
+    let content_size = compute_content_size(state);
+
+    let (h_fill, cw, h_area) = if let Some((cw, ch)) = content_size {
+        let h = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Fill(1),
+                Constraint::Max(cw.min(area.width)),
+                Constraint::Fill(1),
+            ])
+            .split(area);
+        let v = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Fill(1),
+                Constraint::Max(ch.min(area.height)),
+                Constraint::Fill(1),
+            ])
+            .split(h[1]);
+        (v[1].x, cw, v[1])
+    } else {
+        (area.x, area.width, area)
+    };
+
+    let outer_rect = Rect { x: h_fill, y: h_area.y, width: cw.min(area.width), height: h_area.height };
+    let outer_block = Block::default()
+        .title(" Provider Router ")
+        .borders(Borders::ALL)
+        .border_style(Style::new().fg(C_ACCENT));
+    let inner_area = outer_block.inner(outer_rect);
+    frame.render_widget(outer_block, outer_rect);
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -196,7 +228,7 @@ fn render(frame: &mut Frame, state: &mut RouterTuiState) {
             Constraint::Min(0),    // 内容区
             Constraint::Length(1), // 底部快捷键栏
         ])
-        .split(area);
+        .split(inner_area);
 
     render_top_bar(frame, chunks[0], state);
     match state.view {
@@ -204,6 +236,66 @@ fn render(frame: &mut Frame, state: &mut RouterTuiState) {
         View::Form => render_form_view(frame, chunks[1], state),
     }
     render_bottom_bar(frame, chunks[2], state);
+}
+
+/// 根据当前视图和数据计算内容应有的宽高
+fn compute_content_size(state: &RouterTuiState) -> Option<(u16, u16)> {
+    match state.view {
+        View::Form => None,
+        View::List => {
+            let mut max_w = 0u16;
+
+            let top = format!(
+                " Provider Router {} 127.0.0.1:{}  {} mode  proxied: {}",
+                if state.router_running { "● Running" } else { "● Stopped" },
+                state.router_port,
+                "LIST",
+                state.request_count,
+            );
+            max_w = max_w.max(top.chars().count() as u16);
+
+            for p in &state.providers {
+                let model_text = format!(
+                    " {} model{}",
+                    p.models.len(),
+                    if p.models.len() == 1 { "" } else { "s" },
+                );
+                let line_len = 3 + 4 + p.name.chars().count() + 2
+                    + p.endpoint_type.chars().count() + 2 + 9 + 2
+                    + model_text.chars().count() + 2;
+                max_w = max_w.max(line_len as u16);
+            }
+
+            let keys = "  ↑↓ Navigate  Enter Expand  Space Toggle  a Add  e Edit  d Delete  q Quit";
+            max_w = max_w.max(keys.chars().count() as u16);
+
+            if state.providers.is_empty() {
+                max_w = max_w.max(
+                    "  No providers configured. Press 'a' to add one.".chars().count() as u16
+                );
+            }
+
+            let content_w = max_w + 4;
+
+            let mut h = 0u16;
+            h += 2; // 边框上下
+            h += 1; // 顶部状态栏
+            h += 1; // title Providers (N)
+            if state.providers.is_empty() {
+                h += 1;
+            } else {
+                for (i, p) in state.providers.iter().enumerate() {
+                    h += 1;
+                    if state.expanded == Some(i) {
+                        h += p.models.len() as u16;
+                    }
+                }
+            }
+            h += 1; // bottom bar
+
+            Some((content_w, h))
+        }
+    }
 }
 
 // ============================================================
@@ -573,6 +665,12 @@ fn handle_list_key(key: crossterm::event::KeyEvent, state: &mut RouterTuiState) 
             }
         }
         KeyCode::Char('d') => delete_provider(state),
+        KeyCode::Char(' ') => {
+            if let Some(p) = state.providers.get_mut(state.selected) {
+                p.enabled = !p.enabled;
+                save_config_sync(state);
+            }
+        }
         KeyCode::Char('q') | KeyCode::Esc => return true,
         _ => {}
     }
