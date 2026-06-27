@@ -14,7 +14,8 @@
 ```bash
 cargo build                                           # 构建
 cargo run -- --dry-run                                # 打印配置信息（不启动 pi）
-cargo run -- --tui                                    # 运行 TUI 模式（自动启动 pi RPC）
+	cargo run -- --tui                                    # 运行 TUI 模式（自动启动 pi RPC）
+	cargo run -- --router                                 # 启动独立 Router 模式（Provider 配置管理 TUI）
 cargo test                                            # 单元+集成测试
 cargo test -- --nocapture                             # 测试（显示输出）
 cargo clippy -- -D warnings                           # Lint（必须零警告）
@@ -50,9 +51,9 @@ cargo fmt --check                                     # 格式检查
 ## 项目结构要点
 
 - `src/lib.rs` — 公共 API 库根
-- `src/main.rs` — 薄入口（<50 行）+ `--dry-run` 配置输出
+	- `src/main.rs` — 入口点 + CLI 解析（`--dry-run` / `--tui` / `--router`）
 - `src/action.rs` — Action 枚举（全局通信骨架）
-- `src/app.rs` — App 状态机（持有 `TuiState`），包含 WorkspaceNode/SessionNode/SubAgentInfo 数据模型
+	- `src/app.rs` — App 状态机（持有 `TuiState`），包含 WorkspaceNode/SessionNode/SubAgentInfo 数据模型（渲染/状态操作/Drop 已拆分为 app_render / app_state_ops / app_drop 子模块）
 - `src/persistence.rs` — UI 状态持久化（工作区展开 + 活跃会话 → state.json）
 - `src/tui.rs` — TUI 渲染循环 + RPC 事件处理 + 鼠标/键盘事件 + 剪贴板
 - `src/selection.rs` — 鼠标拖拽选中高亮和文本收集
@@ -70,7 +71,14 @@ cargo fmt --check                                     # 格式检查
   - `bottom_bar.rs` — 底部栏（左快捷键 / 中状态提示 / 右 Token 信息）
   - `top_bar.rs` — 顶部 Tab 栏
   - `popup.rs` — Popup 浮层组件
-- `src/message.rs` — ChatMessage 消息模型 + ContentBlock + EnteredView
+	- `src/message.rs` — ChatMessage 消息模型 + ContentBlock + EnteredView
+	- `src/config.rs` — CLI 参数解析（--dry-run / --tui / --router）
+	- `src/errors.rs` — 错误类型定义
+	- `src/logging.rs` — tracing 日志初始化
+	- `src/state.rs` — 会话状态和上下文管理
+	- `src/tui_state.rs` — TUI 布局状态（滚动位置、折叠状态、输入光标）
+	- `src/router_tui.rs` — Router 独立模式 TUI（Provider 配置管理界面）
+	- `src/utils.rs` — 工具函数（JSON 解析、字符串处理等）
 - `src/provider/` — Provider 路由系统
   - `mod.rs` — ProviderConfig 数据模型（含 endpoint_type 端点类型）+ 持久化 + TS 生成
   - `router.rs` — axum HTTP 反向代理（按 body.model 字段路由，根据 endpoint_type 构造目标路径）
@@ -140,12 +148,19 @@ pi agent (RPC) ──EventStream──→ tui.rs 事件循环
 - **工作区**：名称从 JSONL `cwd` 字段自动提取，显示末级目录（重名时加父级 `/` 区分）；手动添加需输入校验通过的项目路径
 - **Provider 端点类型**：支持 openai_compat / openai_responses / anthropic_messages / gemini 四种端点，TS 动态生成 api 字段，配置变更时自动重新生成 local-provider.ts
 - **持久化**：`~/.config/agent-tui/state.json` — 工作区展开状态 + 活跃会话 ID，退出时自动保存，启动时恢复；`~/.config/agent-tui/providers.json` — Provider 配置
-- **确认弹窗**：删除工作区/会话前弹出确认框（`d` 键触发，Enter 确认 / Esc 取消）
+	- **确认弹窗**：删除工作区/会话前弹出确认框（`d` 键触发，Enter 确认 / Esc 取消）
+	- **思考级别控制**：Shift+Tab 循环切换 thinking level，从 `pi get_state` 读取并展示当前级别
+	- **快照命令**：输入 `/snapshot` 将当前 TUI 画面保存为文本文件
+	- **Markdown 宽度折行**：代码块和表格内容根据面板实际宽度自动折行
+	- **输入区编辑**：支持左右光标移动、Ctrl/Alt 快速删除单词
+	- **Router 独立模式**：`--router` 启动独立 Provider 配置管理 TUI，含列表视图和空格切换启用/禁用状态
 
 ## 当前已知局限
 
 - **无分页/搜索**：消息区无 PageUp/Down 翻页或全文搜索
 - **每帧全量重解析**：Markdown 渲染未缓存，100KB 量级实测可接受
 - **多进程支持**：仅单 agent 实例（阶段五补）
-- **Diff 视图无滚动**：EnteredView::Diff 超出视窗内容不可见
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   
+	- **Diff 视图无滚动**：EnteredView::Diff 超出视窗内容不可见
+	- **无会话改名 UI**：会话重命名依赖后端 RPC 接口，TUI 层无内联编辑控件
+	- **Router TUI 无持久化**：独立 Router 模式的配置修改暂不写回 providers.json
+

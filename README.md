@@ -28,6 +28,9 @@ cargo run -- --dry-run
 # Run TUI (automatically starts pi RPC backend)
 cargo run -- --tui
 
+# Run Router standalone mode (Provider config TUI)
+cargo run -- --router
+
 # Test
 cargo test
 cargo clippy -- -D warnings
@@ -62,6 +65,10 @@ meta-tui/
 │   ├── logging.rs           # Log initialization
 │   ├── message.rs           # ChatMessage + ContentBlock model
 │   ├── theme.rs             # Cyan industrial theme
+│   ├── state.rs             # Session state context management
+│   ├── tui_state.rs         # TUI layout state (scroll, collapse, cursor)
+│   ├── router_tui.rs        # Router standalone mode TUI (Provider config)
+│   ├── utils.rs             # Utility functions (JSON parsing, string utils)
 │   ├── backend/
 │   │   ├── mod.rs           # AgentBackend trait
 │   │   ├── rpc.rs           # PiRpcBackend (process management)

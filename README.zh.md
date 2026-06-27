@@ -28,6 +28,9 @@ cargo run -- --dry-run
 # 运行 TUI（自动启动 pi RPC 后端）
 cargo run -- --tui
 
+# 运行独立 Router 模式（Provider 配置管理 TUI）
+cargo run -- --router
+
 # 测试
 cargo test
 cargo clippy -- -D warnings
@@ -62,6 +65,10 @@ meta-tui/
 │   ├── logging.rs           # 日志初始化
 │   ├── message.rs           # ChatMessage + ContentBlock 消息模型
 │   ├── theme.rs             # Cyan 工业主题
+│   ├── state.rs             # 会话状态和上下文管理
+│   ├── tui_state.rs         # TUI 布局状态（滚动、折叠、输入光标）
+│   ├── router_tui.rs        # Router 独立模式 TUI（Provider 配置管理）
+│   ├── utils.rs             # 工具函数（JSON 解析、字符串处理）
 │   ├── backend/
 │   │   ├── mod.rs           # AgentBackend trait
 │   │   ├── rpc.rs           # PiRpcBackend（进程管理）
